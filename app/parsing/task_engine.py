@@ -286,12 +286,12 @@ def _sanitize_llm_clean_text(llm_clean: str, original: str) -> str:
 
 
 def parse_llm(text: str, base: Optional[date] = None) -> ParseResult:
-    from app.llm.deepseek_client import call_deepseek
+    from app.llm.deepseek_client import call_deepseek_parse
     from app.llm.prompt_builder import build_task_prompt
 
     base = base or today_local()
     prompt = build_task_prompt(text, base)
-    parsed = call_deepseek(prompt)
+    parsed = call_deepseek_parse(prompt)
 
     date_str = validate_date(parsed["date"])
     time_str = validate_time(parsed.get("time"))

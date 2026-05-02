@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -9,6 +9,10 @@ from app.storage.db import Task
 class TaskRepo:
     def __init__(self, session: Session) -> None:
         self._s = session
+
+    # ------------------------------------------------------------------
+    # Создание
+    # ------------------------------------------------------------------
 
     def insert_pending(
         self,
@@ -28,13 +32,66 @@ class TaskRepo:
             status="pending",
             created_at=datetime.now().isoformat(timespec="seconds"),
             telegram_user_id=user_id,
+            ping_count=0,
         )
         self._s.add(task)
         self._s.flush()
         return int(task.id)
 
+    # ------------------------------------------------------------------
+    # Чтение
+    # ------------------------------------------------------------------
+
     def get(self, task_id: int) -> Optional[Task]:
         return self._s.get(Task, task_id)
+
+    def list_recent(self, limit: int = 10) -> list[Task]:
+        return (
+            self._s.query(Task)
+            .order_by(Task.id.desc())
+            .limit(limit)
+            .all()
+        )
+
+    def list_unsynced(self) -> list[Task]:
+        return (
+            self._s.query(Task)
+            .filter(
+                Task.status == "confirmed",
+                (Task.radicale_uid == None) | (Task.radicale_uid == ""),
+            )
+            .order_by(Task.id.asc())
+            .all()
+        )
+
+    def get_today_plan(self, user_id: int, today: Optional[str] = None) -> list[Task]:
+        today_str = today or date.today().isoformat()
+        return (
+            self._s.query(Task)
+            .filter(
+                Task.telegram_user_id == user_id,
+                Task.suggested_date == today_str,
+                Task.status.in_(["pending", "confirmed"]),
+            )
+            .order_by(Task.event_time.asc().nulls_last(), Task.id.asc())
+            .all()
+        )
+
+    def get_active_task(self, user_id: int) -> Optional[Task]:
+        """Последняя незавершённая задача пользователя."""
+        return (
+            self._s.query(Task)
+            .filter(
+                Task.telegram_user_id == user_id,
+                Task.status.notin_(["done", "cancelled"]),
+            )
+            .order_by(Task.id.desc())
+            .first()
+        )
+
+    # ------------------------------------------------------------------
+    # Обновление статуса
+    # ------------------------------------------------------------------
 
     def confirm(self, task_id: int) -> bool:
         task = self._s.get(Task, task_id)
@@ -44,12 +101,23 @@ class TaskRepo:
         task.confirmed_at = datetime.now().isoformat(timespec="seconds")
         return True
 
+    def complete_task(self, task_id: int) -> bool:
+        task = self._s.get(Task, task_id)
+        if task is None:
+            return False
+        task.status = "done"
+        return True
+
     def delete(self, task_id: int) -> bool:
         task = self._s.get(Task, task_id)
         if task is None:
             return False
         self._s.delete(task)
         return True
+
+    # ------------------------------------------------------------------
+    # Обновление даты / времени
+    # ------------------------------------------------------------------
 
     def update_date(self, task_id: int, date_str: str) -> bool:
         task = self._s.get(Task, task_id)
@@ -83,24 +151,47 @@ class TaskRepo:
         task.all_day = all_day
         return True
 
-    def list_recent(self, limit: int = 10) -> list[Task]:
-        return (
-            self._s.query(Task)
-            .order_by(Task.id.desc())
-            .limit(limit)
-            .all()
-        )
+    def move_task(
+        self,
+        task_id: int,
+        new_date: str,
+        new_time: Optional[str] = None,
+        all_day: bool = True,
+    ) -> bool:
+        task = self._s.get(Task, task_id)
+        if task is None:
+            return False
+        task.suggested_date = new_date
+        task.event_time = new_time
+        task.all_day = all_day if new_time is None else False
+        return True
 
-    def list_unsynced(self) -> list[Task]:
-        return (
-            self._s.query(Task)
-            .filter(
-                Task.status == "confirmed",
-                (Task.radicale_uid == None) | (Task.radicale_uid == ""),
-            )
-            .order_by(Task.id.asc())
-            .all()
-        )
+    def snooze_task(
+        self,
+        task_id: int,
+        until_date: str,
+        until_time: Optional[str] = None,
+    ) -> bool:
+        task = self._s.get(Task, task_id)
+        if task is None:
+            return False
+        task.suggested_date = until_date
+        task.event_time = until_time
+        task.all_day = until_time is None
+        task.ping_count = 0
+        task.last_ping_at = None
+        return True
+
+    # ------------------------------------------------------------------
+    # Метаданные
+    # ------------------------------------------------------------------
+
+    def set_category(self, task_id: int, category: str) -> bool:
+        task = self._s.get(Task, task_id)
+        if task is None:
+            return False
+        task.category = category
+        return True
 
     def mark_synced(self, task_id: int, uid: str) -> None:
         task = self._s.get(Task, task_id)

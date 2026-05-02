@@ -9,6 +9,7 @@ from aiogram.types import TelegramObject
 
 from app.bot.handlers.message_router import main_router
 from app.config import settings
+from app.jobs.scheduler import start_scheduler
 from app.storage.db import init_db
 
 
@@ -49,8 +50,14 @@ async def main() -> None:
     dp.update.outer_middleware(AllowedUserMiddleware())
     dp.include_router(main_router)
 
-    logger.info("Starting polling (allowed_user_id=%s)", settings.allowed_user_id)
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    scheduler = start_scheduler(bot)
+    try:
+        logger.info("Starting polling (allowed_user_id=%s)", settings.allowed_user_id)
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    finally:
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+            logger.info("Scheduler stopped")
 
 
 if __name__ == "__main__":

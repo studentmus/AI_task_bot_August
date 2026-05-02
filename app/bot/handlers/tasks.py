@@ -1,10 +1,9 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Protocol
 
 from aiogram import F, Router
-from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -14,8 +13,9 @@ from aiogram.types import (
     Message,
 )
 
+from app.domain.task_actions import TaskActions
 from app.domain.task_service import TaskService
-from app.parsing.task_engine import ParseResult, parse_date_input, parse_task, parse_time_input
+from app.parsing.task_engine import ParseResult, parse_date_input, parse_time_input
 from app.storage.db import SessionLocal
 from app.storage.task_repo import TaskRepo
 
@@ -78,42 +78,7 @@ def _build_keyboard(task_id: int) -> InlineKeyboardMarkup:
 
 
 # ---------------------------------------------------------------------------
-# Приём текстового сообщения — только когда нет активного FSM-состояния
-# ---------------------------------------------------------------------------
-
-@tasks_router.message(StateFilter(None), F.text, ~F.text.startswith("/"))
-async def handle_text(message: Message) -> None:
-    raw = message.text.strip()
-    user_id = message.from_user.id if message.from_user else 0
-
-    try:
-        parsed: ParseResult = await asyncio.to_thread(parse_task, raw)
-    except ValueError as e:
-        await message.answer(f"⚠️ {e}")
-        return
-    except Exception:
-        logger.exception("parse_task failed for %r", raw)
-        await message.answer("⚠️ Не смог разобрать задачу. Попробуй: завтра в 15:00 встреча")
-        return
-
-    with SessionLocal() as session:
-        svc = TaskService(session)
-        task_id = svc.create_task(parsed, user_id)
-        repo = TaskRepo(session)
-        task = repo.get(task_id)
-
-    if task is None:
-        await message.answer("⚠️ Задача записана, но не удалось её прочитать.")
-        return
-
-    await message.answer(
-        _build_card(task, parser=parsed.parser),
-        reply_markup=_build_keyboard(task_id),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Callback: подтвердить
+# Callback: подтвердить (из карточки создания)
 # ---------------------------------------------------------------------------
 
 @tasks_router.callback_query(F.data.startswith("confirm_"))
@@ -144,7 +109,7 @@ async def cb_confirm(callback: CallbackQuery) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Callback: отменить задачу
+# Callback: отменить / удалить задачу
 # ---------------------------------------------------------------------------
 
 @tasks_router.callback_query(F.data.startswith("cancel_"))
@@ -160,9 +125,62 @@ async def cb_cancel(callback: CallbackQuery) -> None:
         session.commit()
 
     if deleted:
-        await callback.message.edit_text("❌ Задача отменена.")
+        await callback.message.edit_text("❌ Задача удалена.")
     else:
         await callback.message.edit_text("⚠️ Задача не найдена.")
+
+
+# ---------------------------------------------------------------------------
+# Callback: выполнено (из пинга)
+# ---------------------------------------------------------------------------
+
+@tasks_router.callback_query(F.data.startswith("done_"))
+async def cb_ping_done(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if callback.message is None:
+        return
+    task_id = int(callback.data.split("_", 1)[1])
+
+    with SessionLocal() as session:
+        actions = TaskActions(session)
+        try:
+            result = actions.complete_task(task_id)
+        except ValueError as e:
+            await callback.message.edit_text(f"⚠️ {e}")
+            return
+
+    await callback.message.edit_text(result)
+
+
+# ---------------------------------------------------------------------------
+# Callback: отложить на завтра (из пинга)
+# ---------------------------------------------------------------------------
+
+@tasks_router.callback_query(F.data.startswith("snooze_"))
+async def cb_ping_snooze(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if callback.message is None:
+        return
+    task_id = int(callback.data.split("_", 1)[1])
+
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+
+    with SessionLocal() as session:
+        repo = TaskRepo(session)
+        task = repo.get(task_id)
+        if task is None:
+            await callback.message.edit_text("⚠️ Задача не найдена.")
+            return
+        until_time = task.event_time if not task.all_day else None
+
+        actions = TaskActions(session)
+        try:
+            result = actions.snooze_task(task_id, tomorrow, until_time)
+        except ValueError as e:
+            await callback.message.edit_text(f"⚠️ {e}")
+            return
+
+    await callback.message.edit_text(result)
 
 
 # ---------------------------------------------------------------------------
@@ -200,11 +218,11 @@ async def fsm_edit_date_receive(message: Message, state: FSMContext) -> None:
             "⚠️ Не распознал дату. Попробуй: завтра, 4 мая, в пятницу, через 3 дня.\n"
             "Или /cancel для отмены."
         )
-        return  # остаёмся в EditStates.date
+        return
     except Exception:
         logger.exception("parse_date_input failed for %r", message.text)
         await message.answer("⚠️ Ошибка парсера. Попробуй ещё раз или /cancel.")
-        return  # остаёмся в EditStates.date
+        return
 
     with SessionLocal() as session:
         repo = TaskRepo(session)
@@ -258,11 +276,11 @@ async def fsm_edit_time_receive(message: Message, state: FSMContext) -> None:
             "⚠️ Не распознал время. Попробуй: 15:00, утром, вечером, без времени.\n"
             "Или /cancel для отмены."
         )
-        return  # остаёмся в EditStates.time
+        return
     except Exception:
         logger.exception("parse_time_input failed for %r", message.text)
         await message.answer("⚠️ Ошибка парсера. Попробуй ещё раз или /cancel.")
-        return  # остаёмся в EditStates.time
+        return
 
     with SessionLocal() as session:
         repo = TaskRepo(session)
