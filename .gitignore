@@ -1,0 +1,17 @@
+# Secrets
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local database
+data/*.db
+*.sqlite3
+
+# OS / Windows metadata
+*Zone.Identifier
+
+# Virtual envs
+.venv/
+venv/
