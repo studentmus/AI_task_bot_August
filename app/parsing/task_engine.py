@@ -125,7 +125,7 @@ def route_task(text: str) -> str:
     return "llm" if has_time_signal(text) else "rule"
 
 
-def parse_rule_based(text: str, base: Optional[date] = None) -> Optional[ParseResult]:
+def parse_rule_based(text: str, base: Optional[date] = None) -> list[ParseResult]:
     base = base or today_local()
     lower = text.lower()
 
@@ -136,13 +136,13 @@ def parse_rule_based(text: str, base: Optional[date] = None) -> Optional[ParseRe
     ]:
         m = re.search(pattern, lower)
         if m:
-            return ParseResult(
+            return [ParseResult(
                 date=(base + timedelta(days=delta)).isoformat(),
                 time=None,
                 all_day=True,
                 clean_text=remove_span(text, m.start(), m.end()),
                 parser="Rule-Based",
-            )
+            )]
 
     month_names = "|".join(sorted(MONTHS.keys(), key=len, reverse=True))
     m = re.search(
@@ -157,16 +157,16 @@ def parse_rule_based(text: str, base: Optional[date] = None) -> Optional[ParseRe
         try:
             target = date(year_num, month_num, day_num)
         except ValueError:
-            return None
+            return []
         if not m.group(3) and target < base:
             target = date(base.year + 1, month_num, day_num)
-        return ParseResult(
+        return [ParseResult(
             date=target.isoformat(),
             time=None,
             all_day=True,
             clean_text=remove_span(text, m.start(), m.end()),
             parser="Rule-Based",
-        )
+        )]
 
     m = re.search(r"\b(?:на\s+)?(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b", lower)
     if m:
@@ -176,16 +176,16 @@ def parse_rule_based(text: str, base: Optional[date] = None) -> Optional[ParseRe
         try:
             target = date(year_num, month_num, day_num)
         except ValueError:
-            return None
+            return []
         if not year_raw and target < base:
             target = date(base.year + 1, month_num, day_num)
-        return ParseResult(
+        return [ParseResult(
             date=target.isoformat(),
             time=None,
             all_day=True,
             clean_text=remove_span(text, m.start(), m.end()),
             parser="Rule-Based",
-        )
+        )]
 
     # "в следующий/следующую/следующее понедельник/пятницу/..."
     weekday_names = "|".join(sorted(WEEKDAYS.keys(), key=len, reverse=True))
@@ -195,15 +195,15 @@ def parse_rule_based(text: str, base: Optional[date] = None) -> Optional[ParseRe
         flags=re.IGNORECASE,
     )
     if m:
-        return ParseResult(
+        return [ParseResult(
             date=next_weekday(base, WEEKDAYS[m.group(1).lower()]).isoformat(),
             time=None,
             all_day=True,
             clean_text=remove_span(text, m.start(), m.end()),
             parser="Rule-Based",
-        )
+        )]
 
-    return None
+    return []
 
 
 def extract_time_heuristic(text: str) -> Optional[str]:
@@ -292,7 +292,7 @@ def _sanitize_llm_clean_text(llm_clean: str, original: str) -> str:
     return fallback if fallback and fallback != "Без названия" else cleanup_text(original)
 
 
-def parse_llm(text: str, base: Optional[date] = None) -> ParseResult:
+def parse_llm(text: str, base: Optional[date] = None) -> list[ParseResult]:
     from app.llm.deepseek_client import call_deepseek_parse
     from app.llm.prompt_builder import build_task_prompt
 
@@ -300,23 +300,36 @@ def parse_llm(text: str, base: Optional[date] = None) -> ParseResult:
     prompt = build_task_prompt(text, base)
     parsed = call_deepseek_parse(prompt)
 
-    date_str = validate_date(parsed["date"])
-    time_str = validate_time(parsed.get("time"))
-    time_str = fix_ambiguous_short_hour(text, time_str)
-    all_day = not bool(time_str)
+    # Новый формат: {"tasks": [...]}; старый формат (один объект) — обратная совместимость.
+    raw_tasks = parsed.get("tasks")
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        raw_tasks = [parsed]
 
-    clean = _sanitize_llm_clean_text(str(parsed.get("clean_text") or ""), text)
+    results: list[ParseResult] = []
+    for item in raw_tasks:
+        try:
+            date_str = validate_date(item["date"])
+            time_str = validate_time(item.get("time"))
+            time_str = fix_ambiguous_short_hour(text, time_str)
+            all_day = not bool(time_str)
+            clean = _sanitize_llm_clean_text(str(item.get("clean_text") or ""), text)
+            results.append(ParseResult(
+                date=date_str,
+                time=time_str,
+                all_day=all_day,
+                clean_text=clean,
+                parser="DeepSeek",
+            ))
+        except Exception as exc:
+            logger.warning("Skipping invalid task item %s: %s", item, exc)
 
-    return ParseResult(
-        date=date_str,
-        time=time_str,
-        all_day=all_day,
-        clean_text=clean,
-        parser="DeepSeek",
-    )
+    if not results:
+        raise ValueError("LLM вернул пустой или невалидный список задач")
+
+    return results
 
 
-def parse_complex_fallback(text: str, base: Optional[date] = None) -> ParseResult:
+def parse_complex_fallback(text: str, base: Optional[date] = None) -> list[ParseResult]:
     base = base or today_local()
 
     m = re.search(
@@ -332,45 +345,64 @@ def parse_complex_fallback(text: str, base: Optional[date] = None) -> ParseResul
         else:
             target = base + timedelta(days=30 * amount)
         time_str = extract_time_heuristic(text)
-        return ParseResult(
+        return [ParseResult(
             date=target.isoformat(),
             time=time_str,
             all_day=time_str is None,
             clean_text=remove_time_words(remove_span(text, m.start(), m.end())),
             parser="Fallback",
-        )
+        )]
 
-    simple = parse_rule_based(text, base)
-    if simple:
+    simple_list = parse_rule_based(text, base)
+    if simple_list:
+        simple = simple_list[0]
         time_str = extract_time_heuristic(text)
-        return ParseResult(
+        return [ParseResult(
             date=simple.date,
             time=time_str,
             all_day=time_str is None,
             clean_text=remove_time_words(simple.clean_text),
             parser="Fallback",
-        )
+        )]
 
     time_str = extract_time_heuristic(text)
-    return ParseResult(
+    return [ParseResult(
         date=base.isoformat(),
         time=time_str,
         all_day=time_str is None,
         clean_text=remove_time_words(text),
         parser="Fallback",
-    )
+    )]
 
 
-def parse_task(text: str, base: Optional[date] = None) -> ParseResult:
+# Сигналы сложного / составного текста — такие сообщения сразу идут в LLM для разбивки.
+_COMPLEX_SIGNALS_RE = re.compile(r",| и | а | потом | затем ", re.IGNORECASE)
+
+
+def _is_complex_text(text: str) -> bool:
+    return bool(_COMPLEX_SIGNALS_RE.search(text)) or len(text) > 40
+
+
+def parse_task(text: str, base: Optional[date] = None) -> list[ParseResult]:
     base = base or today_local()
     text = cleanup_text(text)
+
+    # Составной или длинный текст → сразу LLM, чтобы разбить на несколько задач.
+    if _is_complex_text(text):
+        logger.info("Complex text → LLM for %r", text)
+        try:
+            return parse_llm(text, base)
+        except Exception:
+            logger.exception("LLM failed, using fallback for %r", text)
+            return parse_complex_fallback(text, base)
+
     route = route_task(text)
     logger.info("Router: %s for %r", route, text)
 
     if route == "rule":
-        result = parse_rule_based(text, base)
-        if result:
-            return result
+        results = parse_rule_based(text, base)
+        if results:
+            return results
         raise ValueError(
             "Не нашёл дату в тексте. Попробуй: завтра, 4 мая, в пятницу, через 3 дня."
         )
@@ -383,7 +415,7 @@ def parse_task(text: str, base: Optional[date] = None) -> ParseResult:
 
 
 def parse_date_input(text: str) -> ParseResult:
-    return parse_task(text)
+    return parse_task(text)[0]
 
 
 def parse_time_input(text: str) -> tuple[Optional[str], bool]:

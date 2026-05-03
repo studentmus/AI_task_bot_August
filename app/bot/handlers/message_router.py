@@ -78,11 +78,11 @@ async def dispatch_text(message: Message) -> None:
         await _run_llm_chat(message, user_id, raw)
         return
 
-    # — Rule-based path —
+    # — Rule-based / LLM parsing path —
     try:
-        parsed: ParseResult = await asyncio.to_thread(parse_task, raw)
+        parsed_list: list[ParseResult] = await asyncio.to_thread(parse_task, raw)
     except ValueError:
-        # Дата не распознана → LLM
+        # Дата не распознана → LLM tool-calling
         await _run_llm_chat(message, user_id, raw)
         return
     except Exception:
@@ -90,20 +90,24 @@ async def dispatch_text(message: Message) -> None:
         await message.answer("⚠️ Не смог разобрать задачу. Попробуй: завтра в 15:00 встреча")
         return
 
+    messages_to_send: list[tuple] = []
     with SessionLocal() as session:
         svc = TaskService(session)
-        task_id = svc.create_task(parsed, user_id)
         repo = TaskRepo(session)
-        task = repo.get(task_id)
+        for parsed_item in parsed_list:
+            task_id = svc.create_task(parsed_item, user_id)
+            task = repo.get(task_id)
+            if task is not None:
+                card = _build_card(task, parser=parsed_item.parser)
+                kb = _build_keyboard(task_id)
+                messages_to_send.append((card, kb))
 
-    if task is None:
+    if not messages_to_send:
         await message.answer("⚠️ Задача записана, но не удалось её прочитать.")
         return
 
-    await message.answer(
-        _build_card(task, parser=parsed.parser),
-        reply_markup=_build_keyboard(task_id),
-    )
+    for card, kb in messages_to_send:
+        await message.answer(card, reply_markup=kb)
 
 
 # ---------------------------------------------------------------------------
