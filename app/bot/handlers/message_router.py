@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 
 from aiogram import F, Router
@@ -6,6 +7,7 @@ from aiogram.filters import StateFilter
 from aiogram.types import Message
 
 from app.bot.handlers.commands import commands_router
+from app.bot.handlers.memory import send_memory_proposal
 from app.bot.handlers.tasks import _build_card, _build_keyboard, tasks_router
 from app.domain.task_service import TaskService
 from app.llm.deepseek_client import call_deepseek_chat
@@ -46,7 +48,9 @@ COMMAND_KEYWORDS = [
     "напомни",
     "отложи",
     "какие задачи",
-    "план на",
+    "план на","что у меня", "перенес", "перенеси", "сделал", "выполнил",
+    "удали", "удалить", "отмени", "покажи", "добавь задачу",
+    "поставь задачу", "какие задачи", "план на", "запомни"
 ]
 
 
@@ -115,11 +119,24 @@ async def _run_llm_chat(message: Message, user_id: int, raw: str) -> None:
                 # Выполняем все инструменты
                 for tc in tool_calls:
                     result = execute_tool_call(tc, session, user_id)
-                    logger.info(
-                        "Tool %r → %s",
-                        tc["function"]["name"],
-                        result[:120],
-                    )
+                    logger.info("Tool %r → %s", tc["function"]["name"], result[:120])
+
+                    # Side effect: предложить сохранить память
+                    if tc["function"]["name"] == "propose_memory_save":
+                        try:
+                            outer = json.loads(result)
+                            if outer.get("ok"):
+                                inner = json.loads(outer["result"])
+                                await send_memory_proposal(
+                                    message.bot,
+                                    user_id,
+                                    inner["memory_id"],
+                                    inner["content"],
+                                    inner["memory_type"],
+                                )
+                        except (json.JSONDecodeError, KeyError):
+                            logger.warning("Could not parse propose_memory_save result")
+
                     msgs.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],

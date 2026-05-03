@@ -45,6 +45,18 @@ class Task(Base):
     ping_count = Column(Integer, default=0)
 
 
+class MemoryItem(Base):
+    __tablename__ = "memory_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)
+    content = Column(String, nullable=False)
+    memory_type = Column(String, nullable=False)
+    status = Column(String, default="proposed")  # proposed / confirmed / rejected
+    created_at = Column(String)
+    confirmed_at = Column(String)
+
+
 def _apply_migrations() -> None:
     """Добавляет новые колонки в существующую БД (idempotent)."""
     existing = {col["name"] for col in inspect(engine).get_columns("tasks")}

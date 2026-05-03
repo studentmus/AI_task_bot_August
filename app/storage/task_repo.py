@@ -89,6 +89,37 @@ class TaskRepo:
             .first()
         )
 
+    def find_recent_tasks_by_text(
+        self, user_id: int, query: str, limit: int = 5
+    ) -> list[Task]:
+        """Поиск активных задач по подстроке текста (case-insensitive)."""
+        return (
+            self._s.query(Task)
+            .filter(
+                Task.telegram_user_id == user_id,
+                Task.status.notin_(["done", "cancelled"]),
+                Task.text.ilike(f"%{query}%"),
+            )
+            .order_by(Task.id.desc())
+            .limit(limit)
+            .all()
+        )
+
+    def find_active_or_recent_tasks(
+        self, user_id: int, limit: int = 10
+    ) -> list[Task]:
+        """Все незавершённые задачи пользователя, ближайшие по дате первыми."""
+        return (
+            self._s.query(Task)
+            .filter(
+                Task.telegram_user_id == user_id,
+                Task.status.notin_(["done", "cancelled"]),
+            )
+            .order_by(Task.suggested_date.asc().nulls_last(), Task.id.asc())
+            .limit(limit)
+            .all()
+        )
+
     # ------------------------------------------------------------------
     # Обновление статуса
     # ------------------------------------------------------------------

@@ -7,6 +7,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import TelegramObject
 
+from app.bot.handlers.memory import memory_router
 from app.bot.handlers.message_router import main_router
 from app.config import settings
 from app.jobs.scheduler import start_scheduler
@@ -49,6 +50,7 @@ async def main() -> None:
     dp = Dispatcher()
     dp.update.outer_middleware(AllowedUserMiddleware())
     dp.include_router(main_router)
+    dp.include_router(memory_router)
 
     scheduler = start_scheduler(bot)
     try:

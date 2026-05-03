@@ -110,13 +110,24 @@ def build_day_summary(session: "Session", user_id: int) -> str:
     return "\n".join(lines)
 
 
+def build_memory_context(session: "Session", user_id: int) -> str:
+    """Возвращает подтверждённые воспоминания для вставки в system prompt."""
+    from app.domain.memory_service import MemoryService
+    return MemoryService(session).format_for_context(user_id)
+
+
 def build_messages(session: "Session", user_id: int, user_text: str) -> list[dict]:
-    system = build_system_prompt()
-    summary = build_day_summary(session, user_id)
-    if summary:
-        system = f"{system}\n\n{summary}"
+    parts = [build_system_prompt()]
+
+    memory_ctx = build_memory_context(session, user_id)
+    if memory_ctx:
+        parts.append(memory_ctx)
+
+    day_summary = build_day_summary(session, user_id)
+    if day_summary:
+        parts.append(day_summary)
 
     return [
-        {"role": "system", "content": system},
+        {"role": "system", "content": "\n\n".join(parts)},
         {"role": "user", "content": user_text},
     ]
