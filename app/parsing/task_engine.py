@@ -246,11 +246,8 @@ def validate_date(value: str) -> str:
     return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
 
 
-def validate_time(value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
-    value = str(value).strip()
-    m = re.fullmatch(r"(\d{1,2}):(\d{2})", value)
+def _validate_single_time(value: str) -> str:
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", value.strip())
     if not m:
         raise ValueError(f"Invalid time: {value!r}")
     hour, minute = int(m.group(1)), int(m.group(2))
@@ -259,9 +256,19 @@ def validate_time(value: Optional[str]) -> Optional[str]:
     return f"{hour:02d}:{minute:02d}"
 
 
+def validate_time(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    value = str(value).strip()
+    if "-" in value:
+        start_raw, end_raw = value.split("-", 1)
+        return f"{_validate_single_time(start_raw)}-{_validate_single_time(end_raw)}"
+    return _validate_single_time(value)
+
+
 def fix_ambiguous_short_hour(original_text: str, time_value: Optional[str]) -> Optional[str]:
     """Make 'в 3 часа' → 15:00, not 03:00."""
-    if not time_value:
+    if not time_value or "-" in time_value:
         return time_value
     lower = original_text.lower()
     m = re.search(r"\b(?:в|к)\s*([1-6])\s*(?:час|часа|часов|ч)?\b", lower)
@@ -383,6 +390,26 @@ def parse_time_input(text: str) -> tuple[Optional[str], bool]:
     lower = cleanup_text(text).lower()
     if lower in {"без времени", "без время", "весь день", "на весь день", "all day", "none", "нет", "-"}:
         return None, True
+
+    # Явный диапазон "HH:MM-HH:MM"
+    m = re.fullmatch(r"(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})", lower)
+    if m:
+        return f"{_validate_single_time(m.group(1))}-{_validate_single_time(m.group(2))}", False
+
+    # Диапазон на естественном языке: "с 10 до 12", "с 10:30 до 14:00"
+    m = re.search(
+        r"\bс\s+(\d{1,2}(?:[:.]\d{2})?)\s+до\s+(\d{1,2}(?:[:.]\d{2})?)\b",
+        lower,
+    )
+    if m:
+        start_raw = m.group(1).replace(".", ":")
+        if ":" not in start_raw:
+            start_raw += ":00"
+        end_raw = m.group(2).replace(".", ":")
+        if ":" not in end_raw:
+            end_raw += ":00"
+        return f"{_validate_single_time(start_raw)}-{_validate_single_time(end_raw)}", False
+
     time_str = extract_time_heuristic(lower)
     if not time_str:
         raise ValueError(f"Cannot parse time from {text!r}")

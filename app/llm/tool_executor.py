@@ -85,6 +85,9 @@ def _dispatch(name: str, args: dict, session: Session, user_id: int) -> str:
     if name == "complete_task":
         return actions.complete_task(_resolve_task_id(args, session, user_id))
 
+    if name == "delete_task":
+        return actions.delete_task(_resolve_task_id(args, session, user_id))
+
     if name == "move_task":
         new_time = args.get("new_time") or None
         return actions.move_task(

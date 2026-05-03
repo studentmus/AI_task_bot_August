@@ -1,8 +1,10 @@
 import asyncio
 import json
 import logging
+import re
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.types import Message
 
@@ -20,6 +22,16 @@ from app.storage.task_repo import TaskRepo
 
 
 logger = logging.getLogger(__name__)
+
+# Теги, которые DeepSeek иногда «протекает» в финальный content:
+# <｜tool_calls｜>, <｜dsml｜tool_calls｜> и подобные.
+# Fullwidth vertical line U+FF5C (｜) — характерный маркер.
+_DEEPSEEK_TAG_RE = re.compile(r"</?｜[^>]*>", re.IGNORECASE)
+
+
+def _clean_reply(text: str) -> str:
+    return _DEEPSEEK_TAG_RE.sub("", text).strip()
+
 
 main_router = Router(name="main")
 
@@ -157,4 +169,14 @@ async def _run_llm_chat(message: Message, user_id: int, raw: str) -> None:
         await message.answer("⚠️ Не смог обработать запрос. Попробуй позже.")
         return
 
-    await message.answer(reply)
+    reply = _clean_reply(reply) or "Готово."
+
+    try:
+        await message.answer(reply)
+    except TelegramBadRequest as exc:
+        err = str(exc).lower()
+        if "can't parse entities" in err or "unsupported start tag" in err:
+            logger.warning("Telegram rejected markup, retrying as plain text: %s", exc)
+            await message.answer(reply, parse_mode=None)
+        else:
+            raise

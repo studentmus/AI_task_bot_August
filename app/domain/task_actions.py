@@ -38,10 +38,32 @@ class TaskActions:
         if task.status == "done":
             raise ValueError(f"Задача «{task.text}» уже выполнена.")
         name = task.text
+        uid = task.radicale_uid
         self._repo.complete_task(task_id)
         self._session.commit()
+        if uid:
+            try:
+                from app.calendar.radicale_sync import delete_task_calendar
+                delete_task_calendar(uid)
+            except ImportError:
+                pass
         logger.info("Task completed id=%s", task_id)
         return f"✅ «{name}» — выполнено."
+
+    def delete_task(self, task_id: int) -> str:
+        task = self._get_or_raise(task_id)
+        name = task.text
+        uid = task.radicale_uid
+        task.status = "cancelled"
+        self._session.commit()
+        if uid:
+            try:
+                from app.calendar.radicale_sync import delete_task_calendar
+                delete_task_calendar(uid)
+            except ImportError:
+                pass
+        logger.info("Task deleted id=%s", task_id)
+        return f"🗑 «{name}» — удалено."
 
     # ------------------------------------------------------------------
     # Перенос / откладывание

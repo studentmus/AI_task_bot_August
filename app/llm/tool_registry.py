@@ -70,6 +70,23 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "delete_task",
+            "description": (
+                "Удалить задачу. Используй когда пользователь хочет удалить, убрать или "
+                "отменить задачу. Не используй complete_task для удаления. "
+                "Передай task_id если известен, иначе task_text с описанием задачи."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": _TASK_REF_PROPS,
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "move_task",
             "description": (
                 "Перенести задачу на другую дату или время. Используй когда пользователь "

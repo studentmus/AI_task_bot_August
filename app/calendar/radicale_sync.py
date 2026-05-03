@@ -25,9 +25,16 @@ def _format_ical(task) -> str:
     else:
         # Time-specific event
         try:
-            h, m = map(int, task.event_time.split(":"))
-            dt_start = t_date.strftime("%Y%m%d") + f"T{h:02d}{m:02d}00"
-            dt_end = t_date.strftime("%Y%m%d") + f"T{(h+1):02d}{m:02d}00"
+            if "-" in task.event_time:
+                start_str, end_str = task.event_time.split("-", 1)
+                h_s, m_s = map(int, start_str.strip().split(":"))
+                h_e, m_e = map(int, end_str.strip().split(":"))
+                dt_start = t_date.strftime("%Y%m%d") + f"T{h_s:02d}{m_s:02d}00"
+                dt_end = t_date.strftime("%Y%m%d") + f"T{h_e:02d}{m_e:02d}00"
+            else:
+                h, m = map(int, task.event_time.split(":"))
+                dt_start = t_date.strftime("%Y%m%d") + f"T{h:02d}{m:02d}00"
+                dt_end = t_date.strftime("%Y%m%d") + f"T{(h+1):02d}{m:02d}00"
             dt_params = "VALUE=DATE-TIME"
         except (ValueError, AttributeError):
             dt_start = t_date.strftime("%Y%m%d")
