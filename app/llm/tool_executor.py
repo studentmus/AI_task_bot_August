@@ -11,7 +11,7 @@ from app.storage.task_repo import TaskRepo
 logger = logging.getLogger(__name__)
 
 
-def execute_tool_call(tool_call: dict, session: Session, user_id: int) -> str:
+async def execute_tool_call(tool_call: dict, session: Session, user_id: int) -> str:
     """Выполняет один tool call от LLM.
 
     Принимает tool_call в формате OpenAI/DeepSeek:
@@ -31,7 +31,7 @@ def execute_tool_call(tool_call: dict, session: Session, user_id: int) -> str:
     logger.info("Tool call: %s args=%s", name, args)
 
     try:
-        result = _dispatch(name, args, session, user_id)
+        result = await _dispatch(name, args, session, user_id)
         return json.dumps({"ok": True, "result": result}, ensure_ascii=False)
     except ValueError as exc:
         return _err(str(exc))
@@ -65,7 +65,7 @@ def _resolve_task_id(args: dict, session: Session, user_id: int) -> int:
     raise ValueError(f"Задача по описанию «{query}» не найдена.")
 
 
-def _dispatch(name: str, args: dict, session: Session, user_id: int) -> str:
+async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> str:
     actions = TaskActions(session)
 
     if name == "create_task":
@@ -151,5 +151,13 @@ def _dispatch(name: str, args: dict, session: Session, user_id: int) -> str:
             type_label = MEMORY_TYPES.get(item.memory_type, item.memory_type)
             lines.append(f"[{type_label}] {item.content}")
         return "\n".join(lines)
+
+    if name == "read_obsidian_protocol":
+        from app.llm.obsidian_tools import read_obsidian_protocol
+        return await read_obsidian_protocol(args["sphere"])
+
+    if name == "append_obsidian_log":
+        from app.llm.obsidian_tools import append_obsidian_log
+        return await append_obsidian_log(args["sphere"], args["entry"])
 
     raise ValueError(f"Неизвестный инструмент: {name!r}")

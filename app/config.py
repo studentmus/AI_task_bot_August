@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     radicale_user: str = "ivan"
     radicale_pass: str = "shh123"
 
+    obsidian_vault_path: str = "/home/adminlinux/MyBrain"
+
     log_level: str = "INFO"
     allowed_user_id: int | None = None
 

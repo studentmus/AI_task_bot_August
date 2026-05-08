@@ -60,10 +60,42 @@ COMMAND_KEYWORDS = [
     "напомни",
     "отложи",
     "какие задачи",
-    "план на","что у меня", "перенес", "перенеси", "сделал", "выполнил",
+    "план на", "перенес", "перенеси", "сделал", "выполнил",
     "удали", "удалить", "отмени", "покажи", "добавь задачу",
-    "поставь задачу", "какие задачи", "план на", "запомни"
+    "поставь задачу", "какие задачи", "план на", "запомни",
 ]
+
+# ---------------------------------------------------------------------------
+# Obsidian-лог: детектор намерения «записать факт в сферу»
+# ---------------------------------------------------------------------------
+
+# Глаголы-маркеры в начале сообщения + "в [слово]" → всегда лог, никогда задача.
+# Примеры: "Запиши в питание: ...", "Добавь в лог ...", "Отметь в сон ..."
+_OBSIDIAN_LOG_RE = re.compile(
+    r"^(?:запиши|запишите|добавь|добавьте|отметь|отметьте|"
+    r"зафиксируй|зафиксируйте|залогируй|залогируйте)\s+в\s+\S",
+    re.IGNORECASE,
+)
+
+# Известные названия сфер — используются как второй уровень проверки,
+# если глагол есть, но за ним не сразу "в слово" (нестандартный порядок слов).
+_LOG_SPHERE_KEYWORDS = [
+    "в питание", "в лог", "в журнал", "в дневник", "в протокол",
+    "в сон", "в тренировки", "в тренировку", "в спорт",
+    "в здоровье", "в финансы", "в работу", "в привычки",
+    "в рацион", "в настроение",
+]
+
+_LOG_LEADING_VERBS = {"запиши", "добавь", "отметь", "зафиксируй", "залогируй"}
+
+
+def _is_obsidian_log_intent(lower: str) -> bool:
+    """True если сообщение — запись-в-сферу, а не постановка будущей задачи."""
+    if _OBSIDIAN_LOG_RE.match(lower):
+        return True
+    # Запасной вариант: глагол в начале + явная сфера где-то в тексте
+    first_word = lower.split()[0] if lower.split() else ""
+    return first_word in _LOG_LEADING_VERBS and any(kw in lower for kw in _LOG_SPHERE_KEYWORDS)
 
 
 @main_router.message(StateFilter(None), F.text, ~F.text.startswith("/"))
@@ -71,6 +103,12 @@ async def dispatch_text(message: Message) -> None:
     raw = message.text.strip()
     user_id = message.from_user.id if message.from_user else 0
     lower = raw.lower()
+
+    # — Obsidian-лог: "запиши/добавь/отметь в [сферу]" → сразу LLM, task_engine не трогать —
+    if _is_obsidian_log_intent(lower):
+        logger.info("Obsidian log intent → LLM for %r", raw)
+        await _run_llm_chat(message, user_id, raw)
+        return
 
     # — Явные команды → сразу LLM, минуя rule-based —
     if any(kw in lower for kw in COMMAND_KEYWORDS):
@@ -134,7 +172,7 @@ async def _run_llm_chat(message: Message, user_id: int, raw: str) -> None:
 
                 # Выполняем все инструменты
                 for tc in tool_calls:
-                    result = execute_tool_call(tc, session, user_id)
+                    result = await execute_tool_call(tc, session, user_id)
                     logger.info("Tool %r → %s", tc["function"]["name"], result[:120])
 
                     # Side effect: предложить сохранить память
