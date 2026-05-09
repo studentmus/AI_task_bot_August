@@ -9,12 +9,12 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_LOG_HEADER = "## Лог"
-
+# Используем английский заголовок, как в твоем файле
+_LOG_HEADER = "## Log"
 
 def _sphere_path(sphere: str) -> Path:
+    # Динамически берем путь: локально будет /home/..., на сервере /opt/...
     return Path(settings.obsidian_vault_path) / "_bot" / f"{sphere}.md"
-
 
 async def read_obsidian_protocol(sphere: str) -> str:
     path = _sphere_path(sphere)
@@ -27,7 +27,6 @@ async def read_obsidian_protocol(sphere: str) -> str:
         logger.error("read_obsidian_protocol: %s", exc)
         return f"Ошибка чтения файла: {exc}"
 
-
 async def append_obsidian_log(sphere: str, entry: str) -> str:
     path = _sphere_path(sphere)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -36,11 +35,12 @@ async def append_obsidian_log(sphere: str, entry: str) -> str:
     log_line = f"- [{timestamp}] {entry}\n"
 
     try:
+        content = ""
         try:
             async with aiofiles.open(path, encoding="utf-8") as f:
                 content = await f.read()
         except FileNotFoundError:
-            content = ""
+            pass
 
         if _LOG_HEADER in content:
             lines = content.splitlines(keepends=True)
@@ -67,25 +67,24 @@ async def append_obsidian_log(sphere: str, entry: str) -> str:
     git_result = await _git_sync(f"_bot/{sphere}.md", sphere)
     return f"Запись добавлена. Git: {git_result}"
 
-
 async def _git_sync(rel_path: str, sphere: str) -> str:
     cwd = settings.obsidian_vault_path
 
     async def _run(cmd: str) -> tuple[int, str]:
         proc = await asyncio.create_subprocess_shell(
             cmd,
-            cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
         return proc.returncode, (stdout + stderr).decode(errors="replace").strip()
 
+    # Жесткий переход в нужную папку перед каждой командой
     steps = [
-        ("pull",   "git pull origin main"),
-        ("add",    f"git add {rel_path}"),
-        ("commit", f'git commit -m "bot: log update for {sphere}"'),
-        ("push",   "git push origin main"),
+        ("pull",   f"cd {cwd} && git pull origin main"),
+        ("add",    f"cd {cwd} && git add {rel_path}"),
+        ("commit", f'cd {cwd} && git commit -m "bot: log update for {sphere}"'),
+        ("push",   f"cd {cwd} && git push origin main"),
     ]
 
     for step_name, cmd in steps:
