@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+from datetime import datetime
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -13,6 +14,7 @@ from app.bot.handlers.memory import send_memory_proposal
 from app.bot.handlers.tasks import _build_card, _build_keyboard, tasks_router
 from app.domain.task_service import TaskService
 from app.llm.deepseek_client import call_deepseek_chat
+from app.llm.obsidian_tools import append_obsidian_log, _resolve_sphere
 from app.llm.prompt_builder import build_messages
 from app.llm.tool_executor import execute_tool_call
 from app.llm.tool_registry import TOOLS
@@ -93,6 +95,38 @@ _LOG_SPHERE_KEYWORDS = [
 
 _LOG_LEADING_VERBS = {"запиши", "добавь", "отметь", "зафиксируй", "залогируй"}
 
+# Слова-продолжения без явной сферы: "еще съел 300г салата", "плюс выпил кофе"
+_LOG_CONTINUATION_RE = re.compile(
+    r"^(?:еще|ещё|также|плюс|добавь)\b",
+    re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
+# Сессионный кэш контекста лога (in-memory, живёт вместе с процессом)
+# ---------------------------------------------------------------------------
+
+_LOG_CONTEXT_TTL = 900  # секунд (15 минут)
+
+# user_id → {"sphere": str, "timestamp": datetime}
+USER_LOG_CONTEXT: dict[int, dict] = {}
+
+
+def _set_log_context(user_id: int, sphere: str) -> None:
+    USER_LOG_CONTEXT[user_id] = {"sphere": sphere, "timestamp": datetime.now()}
+
+
+def _check_log_continuation(user_id: int, lower: str) -> str | None:
+    """Если сообщение — продолжение лога и кэш свежий, возвращает сферу. Иначе None."""
+    if not _LOG_CONTINUATION_RE.match(lower):
+        return None
+    ctx = USER_LOG_CONTEXT.get(user_id)
+    if ctx is None:
+        return None
+    age = (datetime.now() - ctx["timestamp"]).total_seconds()
+    if age > _LOG_CONTEXT_TTL:
+        return None
+    return ctx["sphere"]
+
 
 def _extract_log_sphere(m: re.Match) -> str | None:
     """Возвращает очищенное имя сферы из матча _OBSIDIAN_LOG_RE."""
@@ -121,12 +155,21 @@ async def dispatch_text(message: Message) -> None:
     user_id = message.from_user.id if message.from_user else 0
     lower = raw.lower()
 
-    # — Obsidian-лог: "запиши/добавь/отметь в [сферу]" → сразу LLM, task_engine не трогать —
+    # — Obsidian-лог: явная сфера в сообщении → LLM (он вызовет append_obsidian_log и обновит кэш) —
     if _is_obsidian_log_intent(lower):
         m = _OBSIDIAN_LOG_RE.match(lower)
         sphere = _extract_log_sphere(m) if m else None
         logger.info("Obsidian log intent (sphere=%s) → LLM for %r", sphere, raw)
         await _run_llm_chat(message, user_id, raw)
+        return
+
+    # — Продолжение лога: "еще/ещё/также/плюс/добавь" + свежий кэш → прямой вызов без LLM —
+    continuation_sphere = _check_log_continuation(user_id, lower)
+    if continuation_sphere is not None:
+        # Убираем вводное слово для чистоты записи: "еще съел 300г" → "съел 300г"
+        entry = _LOG_CONTINUATION_RE.sub("", raw, count=1).lstrip(":, ").strip() or raw
+        logger.info("Log continuation (sphere=%s) → direct append for %r", continuation_sphere, raw)
+        await _run_log_direct(message, user_id, continuation_sphere, entry)
         return
 
     # — Явные команды → сразу LLM, минуя rule-based —
@@ -168,6 +211,24 @@ async def dispatch_text(message: Message) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Прямая запись в Obsidian-лог (для продолжений, без LLM-раунда)
+# ---------------------------------------------------------------------------
+
+async def _run_log_direct(message: Message, user_id: int, sphere: str, entry: str) -> None:
+    try:
+        result = await append_obsidian_log(sphere, entry)
+        logger.info("Direct log (sphere=%s) result: %s", sphere, result[:120])
+        if result.startswith("Ошибка"):
+            await message.answer(result)
+        else:
+            _set_log_context(user_id, sphere)  # обновляем TTL для следующего продолжения
+            await message.answer(f"📝 Добавлено в {sphere}.")
+    except Exception:
+        logger.exception("Direct log failed for user=%s sphere=%s", user_id, sphere)
+        await message.answer("⚠️ Не смог записать. Попробуй позже.")
+
+
+# ---------------------------------------------------------------------------
 # LLM tool-calling цикл
 # ---------------------------------------------------------------------------
 
@@ -193,6 +254,17 @@ async def _run_llm_chat(message: Message, user_id: int, raw: str) -> None:
                 for tc in tool_calls:
                     result = await execute_tool_call(tc, session, user_id)
                     logger.info("Tool %r → %s", tc["function"]["name"], result[:120])
+
+                    # Запоминаем сферу после успешной записи лога — для продолжений
+                    if tc["function"]["name"] == "append_obsidian_log" and not result.startswith("Ошибка"):
+                        try:
+                            args = json.loads(tc["function"]["arguments"])
+                            resolved = _resolve_sphere(args.get("sphere", ""))
+                            if resolved:
+                                _set_log_context(user_id, resolved)
+                                logger.info("Log context set: user=%s sphere=%s", user_id, resolved)
+                        except (json.JSONDecodeError, KeyError):
+                            pass
 
                     # Side effect: предложить сохранить память
                     if tc["function"]["name"] == "propose_memory_save":
