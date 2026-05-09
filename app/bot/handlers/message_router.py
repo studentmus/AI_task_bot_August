@@ -69,11 +69,16 @@ COMMAND_KEYWORDS = [
 # Obsidian-лог: детектор намерения «записать факт в сферу»
 # ---------------------------------------------------------------------------
 
-# Глаголы-маркеры в начале сообщения + "в [слово]" → всегда лог, никогда задача.
-# Примеры: "Запиши в питание: ...", "Добавь в лог ...", "Отметь в сон ..."
+# Ловим оба порядка слов:
+#   прямой:   "Запиши в питание: ..."   → group sphere1
+#   обратный: "В питание запиши: ..."   → group sphere2
 _OBSIDIAN_LOG_RE = re.compile(
-    r"^(?:запиши|запишите|добавь|добавьте|отметь|отметьте|"
-    r"зафиксируй|зафиксируйте|залогируй|залогируйте)\s+в\s+\S",
+    r"^(?:"
+    r"(?:запиши|запишите|добавь|добавьте|отметь|отметьте|зафиксируй|зафиксируйте|залогируй|залогируйте)"
+    r"\s+в\s+(?P<sphere1>[^\s:]+)"
+    r"|"
+    r"в\s+(?P<sphere2>[^\s:]+)\s+(?:запиши|запишите|добавь|добавьте|отметь|отметьте|зафиксируй|зафиксируйте|залогируй|залогируйте)"
+    r")",
     re.IGNORECASE,
 )
 
@@ -89,13 +94,25 @@ _LOG_SPHERE_KEYWORDS = [
 _LOG_LEADING_VERBS = {"запиши", "добавь", "отметь", "зафиксируй", "залогируй"}
 
 
+def _extract_log_sphere(m: re.Match) -> str | None:
+    """Возвращает очищенное имя сферы из матча _OBSIDIAN_LOG_RE."""
+    raw = m.group("sphere1") or m.group("sphere2") or ""
+    cleaned = re.sub(r"[^\w]", "", raw, flags=re.UNICODE).lower()
+    return cleaned or None
+
+
 def _is_obsidian_log_intent(lower: str) -> bool:
     """True если сообщение — запись-в-сферу, а не постановка будущей задачи."""
     if _OBSIDIAN_LOG_RE.match(lower):
         return True
-    # Запасной вариант: глагол в начале + явная сфера где-то в тексте
+    # Запасной вариант: явная сфера + глагол-маркер в любом месте текста
     first_word = lower.split()[0] if lower.split() else ""
-    return first_word in _LOG_LEADING_VERBS and any(kw in lower for kw in _LOG_SPHERE_KEYWORDS)
+    has_sphere = any(kw in lower for kw in _LOG_SPHERE_KEYWORDS)
+    has_verb = any(v in lower for v in _LOG_LEADING_VERBS)
+    if first_word == "в":
+        # "в питание добавь ...", "в дневник отметь ..."
+        return has_sphere and has_verb
+    return first_word in _LOG_LEADING_VERBS and has_sphere
 
 
 @main_router.message(StateFilter(None), F.text, ~F.text.startswith("/"))
@@ -106,7 +123,9 @@ async def dispatch_text(message: Message) -> None:
 
     # — Obsidian-лог: "запиши/добавь/отметь в [сферу]" → сразу LLM, task_engine не трогать —
     if _is_obsidian_log_intent(lower):
-        logger.info("Obsidian log intent → LLM for %r", raw)
+        m = _OBSIDIAN_LOG_RE.match(lower)
+        sphere = _extract_log_sphere(m) if m else None
+        logger.info("Obsidian log intent (sphere=%s) → LLM for %r", sphere, raw)
         await _run_llm_chat(message, user_id, raw)
         return
 
