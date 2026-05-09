@@ -73,18 +73,19 @@ async def _git_sync(rel_path: str, sphere: str) -> str:
     async def _run(cmd: str) -> tuple[int, str]:
         proc = await asyncio.create_subprocess_shell(
             cmd,
+            cwd=cwd,  # <-- ВЕРНУЛИ НА МЕСТО!
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
         return proc.returncode, (stdout + stderr).decode(errors="replace").strip()
 
-    # Жесткий переход в нужную папку перед каждой командой
+    # Двойная защита: и cwd в питоне, и флаг -C в самом гите
     steps = [
-        ("pull",   f"cd {cwd} && git pull origin main"),
-        ("add",    f"cd {cwd} && git add {rel_path}"),
-        ("commit", f'cd {cwd} && git commit -m "bot: log update for {sphere}"'),
-        ("push",   f"cd {cwd} && git push origin main"),
+        ("pull",   f"git -C {cwd} pull origin main"),
+        ("add",    f"git -C {cwd} add {rel_path}"),
+        ("commit", f'git -C {cwd} commit -m "bot: log update for {sphere}"'),
+        ("push",   f"git -C {cwd} push origin main"),
     ]
 
     for step_name, cmd in steps:
