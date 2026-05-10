@@ -16,6 +16,9 @@ class TaskService:
         self._repo = TaskRepo(session)
 
     def create_task(self, parsed: ParseResult, user_id: int) -> int:
+        """Сохраняет задачу в SQLite со статусом pending.
+        Google Calendar sync НЕ выполняется здесь — задача ещё не подтверждена
+        и время может быть уточнено пользователем. Sync происходит в confirm_and_sync."""
         task_id = self._repo.insert_pending(
             text=parsed.clean_text,
             date=parsed.date,
@@ -24,20 +27,7 @@ class TaskService:
             user_id=user_id,
         )
         self._session.commit()
-        logger.info("Task created id=%s parser=%s", task_id, parsed.parser)
-
-        task = self._repo.get(task_id)
-        if task is not None:
-            try:
-                from app.domain.google_calendar import create_event
-                event_id = create_event(task)
-                if event_id:
-                    self._repo.mark_synced(task_id, event_id)
-                    self._session.commit()
-                    logger.info("Task synced to Google Calendar id=%s event_id=%s", task_id, event_id)
-            except Exception:
-                logger.exception("Google Calendar sync failed for task id=%s", task_id)
-
+        logger.info("Task created (pending, not synced) id=%s parser=%s", task_id, parsed.parser)
         return task_id
 
     def cleanup_stale_pending(self, older_than_hours: int = 1) -> int:
@@ -63,9 +53,31 @@ class TaskService:
         return count
 
     def confirm_and_sync(self, task_id: int) -> Optional[str]:
-        """Подтверждает задачу в SQLite. Calendar sync уже выполнен при create_task."""
+        """Подтверждает задачу и синхронизирует с Google Calendar.
+        Sync выполняется здесь, а не при create_task, чтобы дата/время были финальными."""
         if not self._repo.confirm(task_id):
             raise ValueError(f"Task {task_id} not found")
         self._session.commit()
         logger.info("Task confirmed id=%s", task_id)
+
+        task = self._repo.get(task_id)
+        if task is None:
+            return None
+
+        if task.radicale_uid:
+            # Уже синхронизировано ранее (например через LLM-путь)
+            logger.info("Task id=%s already has google_event_id, skipping create", task_id)
+            return task.radicale_uid
+
+        try:
+            from app.domain.google_calendar import create_event
+            event_id = create_event(task)
+            if event_id:
+                self._repo.mark_synced(task_id, event_id)
+                self._session.commit()
+                logger.info("Task synced to Google Calendar on confirm id=%s event_id=%s", task_id, event_id)
+                return event_id
+        except Exception:
+            logger.exception("Google Calendar sync failed on confirm for task id=%s", task_id)
+
         return None
