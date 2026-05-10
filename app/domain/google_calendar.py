@@ -128,41 +128,52 @@ def create_event(task) -> str | None:
         return None
 
 
-def delete_event(local_task_id: int) -> bool:
-    """Удаляет событие из Google Calendar по local_task_id."""
+def delete_event(local_task_id: int, google_event_id: str | None = None) -> bool:
+    """Удаляет событие из Google Calendar.
+    Сначала пробует прямое удаление по google_event_id (быстро и надёжно),
+    фолбэк — поиск по extendedProperties.local_task_id."""
     try:
         service = _get_service()
-        event_id = _find_event_id(service, local_task_id)
-        if not event_id:
+
+        if google_event_id:
+            try:
+                service.events().delete(calendarId="primary", eventId=google_event_id).execute()
+                logger.info("Event deleted by direct ID: %s (local_task_id=%s)", google_event_id, local_task_id)
+                return True
+            except Exception as exc:
+                logger.warning("Direct delete failed (event_id=%s), falling back to search: %s", google_event_id, exc)
+
+        eid = _find_event_id(service, local_task_id)
+        if not eid:
             logger.warning("delete_event: no event found for local_task_id=%s", local_task_id)
             return False
-        service.events().delete(calendarId="primary", eventId=event_id).execute()
-        logger.info("Google Calendar event deleted: event_id=%s local_task_id=%s", event_id, local_task_id)
+        service.events().delete(calendarId="primary", eventId=eid).execute()
+        logger.info("Event deleted via search: eid=%s local_task_id=%s", eid, local_task_id)
         return True
     except Exception as exc:
         logger.error("delete_event failed for local_task_id=%s: %s", local_task_id, exc)
         return False
 
 
-def mark_event_done(local_task_id: int) -> bool:
-    """Добавляет '✅ ' к названию события и красит его в серый (colorId='8')."""
+def mark_event_done(local_task_id: int, google_event_id: str | None = None) -> bool:
+    """Добавляет '✅ ' к названию события и красит его в серый (colorId='8').
+    Приоритет: прямой google_event_id → поиск по extendedProperties."""
     try:
         service = _get_service()
-        event_id = _find_event_id(service, local_task_id)
-        if not event_id:
+
+        eid = google_event_id or _find_event_id(service, local_task_id)
+        if not eid:
             logger.warning("mark_event_done: no event found for local_task_id=%s", local_task_id)
             return False
 
-        event = service.events().get(calendarId="primary", eventId=event_id).execute()
+        event = service.events().get(calendarId="primary", eventId=eid).execute()
         summary = event.get("summary", "")
         if not summary.startswith("✅ "):
             event["summary"] = f"✅ {summary}"
         event["colorId"] = "8"  # Graphite / серый
 
-        service.events().update(
-            calendarId="primary", eventId=event_id, body=event
-        ).execute()
-        logger.info("Google Calendar event marked done: event_id=%s local_task_id=%s", event_id, local_task_id)
+        service.events().update(calendarId="primary", eventId=eid, body=event).execute()
+        logger.info("Event marked done: eid=%s local_task_id=%s", eid, local_task_id)
         return True
     except Exception as exc:
         logger.error("mark_event_done failed for local_task_id=%s: %s", local_task_id, exc)

@@ -38,11 +38,12 @@ class TaskActions:
         if task.status == "done":
             raise ValueError(f"Задача «{task.text}» уже выполнена.")
         name = task.text
+        google_event_id = task.radicale_uid or None  # читаем ДО изменения статуса
         self._repo.complete_task(task_id)
         self._session.commit()
         try:
             from app.domain.google_calendar import mark_event_done
-            mark_event_done(task_id)
+            mark_event_done(task_id, google_event_id=google_event_id)
         except Exception:
             logger.exception("Google Calendar mark_done failed for task id=%s", task_id)
         logger.info("Task completed id=%s", task_id)
@@ -51,11 +52,12 @@ class TaskActions:
     def delete_task(self, task_id: int) -> str:
         task = self._get_or_raise(task_id)
         name = task.text
+        google_event_id = task.radicale_uid or None  # читаем ДО изменения статуса
         task.status = "cancelled"
         self._session.commit()
         try:
             from app.domain.google_calendar import delete_event
-            delete_event(task_id)
+            delete_event(task_id, google_event_id=google_event_id)
         except Exception:
             logger.exception("Google Calendar delete failed for task id=%s", task_id)
         logger.info("Task deleted id=%s", task_id)

@@ -45,6 +45,18 @@ async def cmd_pending(message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
+@commands_router.message(Command("cleanup"))
+async def cmd_cleanup(message: Message) -> None:
+    """Разовая очистка мусорных pending-задач без привязки к Google Calendar."""
+    with SessionLocal() as session:
+        from app.domain.task_service import TaskService
+        count = TaskService(session).cleanup_stale_pending(older_than_hours=1)
+    if count:
+        await message.answer(f"🧹 Отменено {count} устаревших задач без привязки к календарю.")
+    else:
+        await message.answer("✅ Мусорных задач не найдено.")
+
+
 @commands_router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext) -> None:
     current = await state.get_state()

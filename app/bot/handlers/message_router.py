@@ -263,6 +263,13 @@ async def dispatch_text(message: Message) -> None:
     user_id = message.from_user.id if message.from_user else 0
     lower = raw.lower()
 
+    # ── 0. ГАРДА ВОПРОСОВ — наивысший приоритет, до любых regex-парсеров ────────
+    # Rule-based парсер умеет только создавать задачи; вопросы он испортит.
+    if _QUESTION_RE.search(lower):
+        logger.info("Question detected → LLM for %r", raw)
+        await _run_llm_chat(message, user_id, raw)
+        return
+
     # ── 1. ПРЯМОЙ ЛОГ: сфера + текст извлекаются regex, LLM не нужен ──────────
     # "Запиши в питание: съел стейк" / "Съел стейк, запиши в питание"
     direct = _parse_direct_log_intent(raw)
@@ -304,14 +311,7 @@ async def dispatch_text(message: Message) -> None:
         await _run_llm_chat(message, user_id, raw)
         return
 
-    # ── 6. ГАРДА ВОПРОСОВ: знак «?» или вопросительная конструкция → LLM ────────
-    # Rule-based парсер умеет только создавать задачи — вопросы он испортит.
-    if _QUESTION_RE.search(lower):
-        logger.info("Question detected → LLM for %r", raw)
-        await _run_llm_chat(message, user_id, raw)
-        return
-
-    # ── 7. RULE-BASED ПАРСЕР / FALLBACK → LLM ───────────────────────────────────
+    # ── 6. RULE-BASED ПАРСЕР / FALLBACK → LLM ───────────────────────────────────
     try:
         parsed_list: list[ParseResult] = await asyncio.to_thread(parse_task, raw)
     except ValueError:

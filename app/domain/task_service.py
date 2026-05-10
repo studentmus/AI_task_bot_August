@@ -40,6 +40,28 @@ class TaskService:
 
         return task_id
 
+    def cleanup_stale_pending(self, older_than_hours: int = 1) -> int:
+        """Отменяет pending-задачи без google_event_id, созданные N+ часов назад.
+        Используй через /cleanup для разовой очистки мусора."""
+        from datetime import datetime, timedelta
+        from app.storage.db import Task
+        cutoff = (datetime.now() - timedelta(hours=older_than_hours)).isoformat(timespec="seconds")
+        tasks = (
+            self._session.query(Task)
+            .filter(
+                Task.status == "pending",
+                Task.radicale_uid.is_(None),
+                Task.created_at < cutoff,
+            )
+            .all()
+        )
+        count = len(tasks)
+        for task in tasks:
+            task.status = "cancelled"
+        self._session.commit()
+        logger.info("Stale cleanup: %d tasks cancelled (older_than=%dh)", count, older_than_hours)
+        return count
+
     def confirm_and_sync(self, task_id: int) -> Optional[str]:
         """Подтверждает задачу в SQLite. Calendar sync уже выполнен при create_task."""
         if not self._repo.confirm(task_id):
