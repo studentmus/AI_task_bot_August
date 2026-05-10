@@ -145,35 +145,26 @@ def build_system_prompt() -> str:
 
 
 def build_day_summary(session: "Session", user_id: int) -> str:
+    """Все предстоящие задачи пользователя, сгруппированные по дате.
+    Включает статусы pending и confirmed (т.е. всё что не done/cancelled),
+    чтобы LLM видела задачи независимо от способа их создания."""
     from datetime import date as date_type
+    from itertools import groupby
     from app.storage.task_repo import TaskRepo
 
-    repo = TaskRepo(session)
     today_str = date_type.today().isoformat()
-    today_tasks = repo.get_today_plan(user_id, today=today_str)
-    active = repo.get_active_task(user_id)
+    tasks = TaskRepo(session).get_upcoming_tasks(user_id, from_date=today_str)
 
-    if not today_tasks and active is None:
+    if not tasks:
         return ""
 
-    lines = ["Задачи пользователя:"]
-
-    if today_tasks:
-        lines.append(f"Сегодня ({today_str}):")
-        for t in today_tasks:
+    lines = ["Задачи пользователя (предстоящие):"]
+    for date_val, group in groupby(tasks, key=lambda t: t.suggested_date):
+        label = "Сегодня" if date_val == today_str else date_val
+        lines.append(f"{label}:")
+        for t in group:
             time_part = t.event_time if (not t.all_day and t.event_time) else "весь день"
             lines.append(f"  • id={t.id} [{time_part}] [{t.status}] {t.text}")
-    else:
-        lines.append(f"Сегодня ({today_str}): задач нет.")
-
-    # Показываем активную задачу только если она не из сегодняшнего плана
-    today_ids = {t.id for t in today_tasks}
-    if active is not None and active.id not in today_ids:
-        time_part = active.event_time if (not active.all_day and active.event_time) else "весь день"
-        lines.append(
-            f"Последняя активная задача: id={active.id} "
-            f"[{active.suggested_date}] [{time_part}] {active.text}"
-        )
 
     return "\n".join(lines)
 

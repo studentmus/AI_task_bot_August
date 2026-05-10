@@ -89,6 +89,21 @@ class TaskRepo:
             .first()
         )
 
+    def get_upcoming_tasks(self, user_id: int, from_date: str, limit: int = 20) -> list[Task]:
+        """Все невыполненные задачи начиная с from_date (включительно).
+        Статусы: всё кроме done/cancelled — т.е. pending, confirmed и любые будущие."""
+        return (
+            self._s.query(Task)
+            .filter(
+                Task.telegram_user_id == user_id,
+                Task.suggested_date >= from_date,
+                Task.status.notin_(["done", "cancelled"]),
+            )
+            .order_by(Task.suggested_date.asc(), Task.event_time.asc().nulls_last(), Task.id.asc())
+            .limit(limit)
+            .all()
+        )
+
     def get_recently_done(self, user_id: int, limit: int = 5) -> list[Task]:
         """Последние выполненные задачи — для инъекции в контекст LLM."""
         return (
