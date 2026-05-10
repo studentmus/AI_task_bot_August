@@ -158,6 +158,27 @@ def _set_log_context(user_id: int, sphere: str) -> None:
     USER_LOG_CONTEXT[user_id] = {"sphere": sphere, "timestamp": datetime.now()}
 
 
+# ---------------------------------------------------------------------------
+# Краткосрочная история диалога (in-memory, последние N сообщений)
+# ---------------------------------------------------------------------------
+
+_HISTORY_MAX = 6  # 3 хода = 3 user + 3 assistant
+
+# user_id → [{"role": "user"/"assistant", "content": str}, ...]
+DIALOG_HISTORY: dict[int, list[dict]] = {}
+
+
+def _history_get(user_id: int) -> list[dict]:
+    return list(DIALOG_HISTORY.get(user_id, []))
+
+
+def _history_append(user_id: int, role: str, content: str) -> None:
+    hist = DIALOG_HISTORY.setdefault(user_id, [])
+    hist.append({"role": role, "content": content})
+    if len(hist) > _HISTORY_MAX:
+        DIALOG_HISTORY[user_id] = hist[-_HISTORY_MAX:]
+
+
 def _check_log_continuation(user_id: int, lower: str) -> str | None:
     """Если сообщение — продолжение лога и кэш свежий, возвращает сферу. Иначе None."""
     if not _LOG_CONTINUATION_RE.match(lower):
@@ -327,7 +348,13 @@ async def _run_llm_chat(message: Message, user_id: int, raw: str) -> None:
     reply: str | None = None
     try:
         with SessionLocal() as session:
-            msgs = build_messages(session, user_id, raw)
+            # build_messages возвращает [system_msg, user_msg]
+            base = build_messages(session, user_id, raw)
+            system_msg = base[0]        # {"role": "system", "content": "..."}
+            current_user_msg = base[-1]  # {"role": "user",   "content": raw}
+
+            # Инъекция истории между системным промптом и текущим сообщением
+            msgs = [system_msg] + _history_get(user_id) + [current_user_msg]
 
             # Первый вызов: с инструментами
             response_msg = await asyncio.to_thread(call_deepseek_chat, msgs, TOOLS)
@@ -375,6 +402,10 @@ async def _run_llm_chat(message: Message, user_id: int, raw: str) -> None:
         return
 
     reply = _clean_reply(reply) or "Готово."
+
+    # Сохраняем ход в историю диалога для следующего сообщения
+    _history_append(user_id, "user", raw)
+    _history_append(user_id, "assistant", reply)
 
     try:
         await message.answer(reply)

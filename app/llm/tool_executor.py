@@ -63,6 +63,14 @@ def _resolve_task_id(args: dict, session: Session, user_id: int) -> int:
     raise ValueError(f"Задача по описанию «{query}» не найдена.")
 
 
+def _resolve_task_ids(args: dict, session: Session, user_id: int) -> list[int]:
+    """Возвращает список ID из батч-аргумента task_ids или одиночного task_id/task_text."""
+    ids = args.get("task_ids")
+    if ids:
+        return [int(i) for i in ids]
+    return [_resolve_task_id(args, session, user_id)]
+
+
 async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> str:
     actions = TaskActions(session)
 
@@ -93,10 +101,14 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
         return f"Задача создана, id={task_id}: «{args['text']}» на {args['date']}"
 
     if name == "complete_task":
-        return actions.complete_task(_resolve_task_id(args, session, user_id))
+        ids = _resolve_task_ids(args, session, user_id)
+        results = [actions.complete_task(tid) for tid in ids]
+        return " | ".join(results)
 
     if name == "delete_task":
-        return actions.delete_task(_resolve_task_id(args, session, user_id))
+        ids = _resolve_task_ids(args, session, user_id)
+        results = [actions.delete_task(tid) for tid in ids]
+        return " | ".join(results)
 
     if name == "move_task":
         new_time = args.get("new_time") or None
