@@ -48,14 +48,43 @@ def resolve_task_reference(
     if len(exact) == 1:
         return ResolveResult(status="found", task=exact[0])
 
-    # Шаг 2: частичное совпадение
+    # Шаг 2: частичное совпадение среди активных задач
     candidates = repo.find_recent_tasks_by_text(user_id, text)
 
-    if not candidates:
-        return ResolveResult(status="not_found")
     if len(candidates) == 1:
         return ResolveResult(status="found", task=candidates[0])
-    return ResolveResult(status="ambiguous", candidates=candidates)
+    if len(candidates) > 1:
+        return ResolveResult(status="ambiguous", candidates=candidates)
+
+    # Шаг 3: фолбэк — ищем среди выполненных/отменённых (для delete_task)
+    done_exact = (
+        session.query(Task)
+        .filter(
+            Task.telegram_user_id == user_id,
+            Task.status.in_(["done", "cancelled"]),
+            func.lower(Task.text) == text.lower(),
+        )
+        .all()
+    )
+    if len(done_exact) == 1:
+        return ResolveResult(status="found", task=done_exact[0])
+
+    done_partial = (
+        session.query(Task)
+        .filter(
+            Task.telegram_user_id == user_id,
+            Task.status.in_(["done", "cancelled"]),
+            Task.text.ilike(f"%{text}%"),
+        )
+        .order_by(Task.id.desc())
+        .limit(5)
+        .all()
+    )
+    if not done_partial:
+        return ResolveResult(status="not_found")
+    if len(done_partial) == 1:
+        return ResolveResult(status="found", task=done_partial[0])
+    return ResolveResult(status="ambiguous", candidates=done_partial)
 
 
 def format_candidates(candidates: list[Task]) -> str:

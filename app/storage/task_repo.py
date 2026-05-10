@@ -89,6 +89,19 @@ class TaskRepo:
             .first()
         )
 
+    def get_recently_done(self, user_id: int, limit: int = 5) -> list[Task]:
+        """Последние выполненные задачи — для инъекции в контекст LLM."""
+        return (
+            self._s.query(Task)
+            .filter(
+                Task.telegram_user_id == user_id,
+                Task.status == "done",
+            )
+            .order_by(Task.id.desc())
+            .limit(limit)
+            .all()
+        )
+
     def find_recent_tasks_by_text(
         self, user_id: int, query: str, limit: int = 5
     ) -> list[Task]:

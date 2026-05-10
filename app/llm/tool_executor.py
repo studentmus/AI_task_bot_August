@@ -18,8 +18,6 @@ async def execute_tool_call(tool_call: dict, session: Session, user_id: int) -> 
         {"id": "...", "function": {"name": "...", "arguments": "{...}"}}
 
     Возвращает строку-результат для role=tool ответа.
-    Для propose_memory_save result содержит JSON с memory_id — message_router
-    использует его для вызова send_memory_proposal.
     """
     try:
         name = tool_call["function"]["name"]
@@ -80,6 +78,18 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
         )
         session.commit()
         logger.info("Tool create_task → id=%s", task_id)
+
+        task = repo.get(task_id)
+        if task is not None:
+            try:
+                from app.domain.google_calendar import create_event
+                event_id = create_event(task)
+                if event_id:
+                    repo.mark_synced(task_id, event_id)
+                    session.commit()
+            except Exception:
+                logger.exception("Google Calendar sync failed for task id=%s", task_id)
+
         return f"Задача создана, id={task_id}: «{args['text']}» на {args['date']}"
 
     if name == "complete_task":
@@ -124,33 +134,13 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
         time_part = task.event_time if (not task.all_day and task.event_time) else "весь день"
         return f"id={task.id} | {task.suggested_date} | {time_part} | [{task.status}] {task.text}"
 
-    if name == "propose_memory_save":
-        from app.domain.memory_service import MemoryService
-        content = args["content"].strip()
-        memory_type = args.get("memory_type") or "fact"
-        svc = MemoryService(session)
-        memory_id = svc.propose(user_id, content, memory_type)
-        # Возвращаем JSON-строку — message_router извлечёт memory_id для proposal
-        return json.dumps({
-            "memory_id": memory_id,
-            "content": content,
-            "memory_type": memory_type,
-            "status": "proposed",
-        }, ensure_ascii=False)
+    if name == "save_fact_to_obsidian":
+        from app.llm.obsidian_tools import save_fact_to_obsidian
+        return await save_fact_to_obsidian(args["fact"].strip())
 
-    if name == "search_memory":
-        from app.domain.memory_service import MemoryService
-        query = (args.get("query") or "").strip()
-        svc = MemoryService(session)
-        items = svc.search(user_id, query)
-        if not items:
-            return "Память пуста." if not query else f"По запросу «{query}» ничего не найдено."
-        from app.domain.memory_service import MEMORY_TYPES
-        lines = []
-        for item in reversed(items):
-            type_label = MEMORY_TYPES.get(item.memory_type, item.memory_type)
-            lines.append(f"[{type_label}] {item.content}")
-        return "\n".join(lines)
+    if name == "read_memory_from_obsidian":
+        from app.llm.obsidian_tools import read_memory_from_obsidian
+        return await read_memory_from_obsidian()
 
     if name == "read_obsidian_protocol":
         from app.llm.obsidian_tools import read_obsidian_protocol

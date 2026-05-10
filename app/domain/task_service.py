@@ -25,32 +25,25 @@ class TaskService:
         )
         self._session.commit()
         logger.info("Task created id=%s parser=%s", task_id, parsed.parser)
+
+        task = self._repo.get(task_id)
+        if task is not None:
+            try:
+                from app.domain.google_calendar import create_event
+                event_id = create_event(task)
+                if event_id:
+                    self._repo.mark_synced(task_id, event_id)
+                    self._session.commit()
+                    logger.info("Task synced to Google Calendar id=%s event_id=%s", task_id, event_id)
+            except Exception:
+                logger.exception("Google Calendar sync failed for task id=%s", task_id)
+
         return task_id
 
     def confirm_and_sync(self, task_id: int) -> Optional[str]:
-        """Подтверждает задачу и синхронизирует с Radicale.
-
-        Подтверждение всегда коммитится.
-        Возвращает radicale_uid если sync прошёл, None если модуль недоступен или sync упал.
-        """
+        """Подтверждает задачу в SQLite. Calendar sync уже выполнен при create_task."""
         if not self._repo.confirm(task_id):
             raise ValueError(f"Task {task_id} not found")
         self._session.commit()
         logger.info("Task confirmed id=%s", task_id)
-
-        try:
-            from app.calendar.radicale_sync import sync_task
-        except (ImportError, ModuleNotFoundError):
-            logger.warning("radicale_sync unavailable, calendar sync skipped for task id=%s", task_id)
-            return None
-
-        task = self._repo.get(task_id)
-        try:
-            uid = sync_task(task)
-            self._repo.mark_synced(task_id, uid)
-            self._session.commit()
-            logger.info("Task synced id=%s uid=%s", task_id, uid)
-            return uid
-        except Exception:
-            logger.exception("Radicale sync failed for task id=%s", task_id)
-            return None
+        return None

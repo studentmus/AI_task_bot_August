@@ -10,7 +10,6 @@ from aiogram.filters import StateFilter
 from aiogram.types import Message
 
 from app.bot.handlers.commands import commands_router
-from app.bot.handlers.memory import send_memory_proposal
 from app.bot.handlers.tasks import _build_card, _build_keyboard, tasks_router
 from app.domain.task_service import TaskService
 from app.llm.deepseek_client import call_deepseek_chat
@@ -25,9 +24,8 @@ from app.storage.task_repo import TaskRepo
 
 logger = logging.getLogger(__name__)
 
-# Теги, которые DeepSeek иногда «протекает» в финальный content:
-# <｜tool_calls｜>, <｜dsml｜tool_calls｜> и подобные.
-# Fullwidth vertical line U+FF5C (｜) — характерный маркер.
+# Теги, которые DeepSeek иногда «протекает» в финальный content.
+# Fullwidth vertical line U+FF5C (｜) — характерный маркер DeepSeek.
 _DEEPSEEK_TAG_RE = re.compile(r"</?｜[^>]*>", re.IGNORECASE)
 
 
@@ -46,34 +44,39 @@ main_router.include_router(tasks_router)
 # Текстовый диспетчер: rule-based → LLM tool-calling
 # ---------------------------------------------------------------------------
 
-# Фразы, которые явно адресованы ассистенту, а не являются записью задачи.
+# Фразы, адресованные ассистенту как команды (не записи фактов).
 # При совпадении пропускаем rule-based парсер и идём сразу в LLM.
 COMMAND_KEYWORDS = [
-    "что у меня",
-    "покажи",
-    "перенес",
-    "перенеси",
-    "сделал",
-    "выполнил",
-    "удали",
-    "удалить",
-    "добавь задачу",
-    "поставь задачу",
-    "напомни",
-    "отложи",
-    "какие задачи",
-    "план на", "перенес", "перенеси", "сделал", "выполнил",
-    "удали", "удалить", "отмени", "покажи", "добавь задачу",
-    "поставь задачу", "какие задачи", "план на", "запомни",
+    "что у меня", "покажи", "перенес", "перенеси", "выполнил",
+    "удали", "удалить", "отмени", "добавь задачу", "поставь задачу",
+    "напомни", "отложи", "какие задачи", "план на", "запомни",
 ]
 
 # ---------------------------------------------------------------------------
-# Obsidian-лог: детектор намерения «записать факт в сферу»
+# Obsidian-лог: паттерны распознавания
 # ---------------------------------------------------------------------------
 
-# Ловим оба порядка слов:
-#   прямой:   "Запиши в питание: ..."   → group sphere1
-#   обратный: "В питание запиши: ..."   → group sphere2
+# ── Паттерн A: «Запиши в питание: текст» / «В питание запиши: текст» ──────
+# Захватывает ОБА элемента: сферу и текст записи → прямой вызов без LLM.
+_OBSIDIAN_LOG_FULL_RE = re.compile(
+    r"^(?:"
+    # verb-first: "запиши в питание: текст" или "запиши в питание текст"
+    r"(?:запиши|запишите|добавь|добавьте|отметь|отметьте|зафиксируй|зафиксируйте|залогируй|залогируйте)"
+    r"\s+в\s+(?P<sphere1>[^\s:,]+)[:\s]+(?P<entry1>\S.*)"
+    r"|"
+    # sphere-first: "в питание запиши: текст"
+    r"в\s+(?P<sphere2>[^\s:,]+)\s+(?:запиши|запишите|добавь|добавьте|отметь|отметьте|зафиксируй|зафиксируйте|залогируй|залогируйте)[:\s]+(?P<entry2>\S.*)"
+    r")",
+    re.IGNORECASE,
+)
+
+# ── Паттерн B: «Текст, запиши в питание» (сначала факт, потом директива) ──
+_ENTRY_FIRST_LOG_RE = re.compile(
+    r"^(?P<entry3>\S.+?)[,;]\s*(?:запиши|добавь|отметь|зафиксируй|залогируй)\s+в\s+(?P<sphere3>[^\s:,.]+)\s*$",
+    re.IGNORECASE,
+)
+
+# ── Паттерн C: сфера+глагол без текста (нет what именно записать → LLM спросит) ─
 _OBSIDIAN_LOG_RE = re.compile(
     r"^(?:"
     r"(?:запиши|запишите|добавь|добавьте|отметь|отметьте|зафиксируй|зафиксируйте|залогируй|залогируйте)"
@@ -84,8 +87,48 @@ _OBSIDIAN_LOG_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Известные названия сфер — используются как второй уровень проверки,
-# если глагол есть, но за ним не сразу "в слово" (нестандартный порядок слов).
+# ── Паттерн D: прошедшее время → LLM решает: complete_task или append_obsidian_log ─
+# Две группы глаголов:
+#   а) трекинг-факты (еда, спорт, сон) — скорее всего лог
+#   б) завершение задачи (купил, позвонил, сходил) — скорее всего complete_task
+# LLM сам выбирает инструмент, сверяясь со списком активных задач из промпта.
+_FACT_VERBS_RE = re.compile(
+    r"\b(?:"
+    # Трекинг: еда, спорт, сон, физиология
+    r"съел|съела|съели"
+    r"|выпил|выпила|выпили"
+    r"|пожал|пожала|пожали"
+    r"|потренировался|потренировалась|потренировались"
+    r"|пробежал|пробежала|пробежали"
+    r"|поднял|подняла|подняли"
+    r"|замерил|замерила|замерили"
+    r"|лёг|лег|легла|легли"
+    r"|встал|встала|встали"
+    r"|проснулся|проснулась|проснулись"
+    r"|жал|жала|жали"
+    r"|присел|приседал|приседала"
+    r"|подтянулся|подтянулась|подтянулись"
+    r"|покушал|покушала|поел|поела"
+    r"|поужинал|поужинала|позавтракал|позавтракала|пообедал|пообедала"
+    r"|взвесился|взвесилась"
+    # Завершение задачи: бытовые и рабочие действия
+    r"|купил|купила|купили"
+    r"|позвонил|позвонила|позвонили"
+    r"|сходил|сходила|сходили"
+    r"|отправил|отправила|отправили"
+    r"|написал|написала|написали"
+    r"|закончил|закончила|закончили"
+    r"|выполнил|выполнила|выполнили"
+    r"|сделал|сделала|сделали"
+    r"|оплатил|оплатила|оплатили"
+    r"|забронировал|забронировала"
+    r"|записался|записалась"
+    r"|встретился|встретилась"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Известные сферы — запасной уровень проверки для нестандартного порядка слов.
 _LOG_SPHERE_KEYWORDS = [
     "в питание", "в лог", "в журнал", "в дневник", "в протокол",
     "в сон", "в тренировки", "в тренировку", "в спорт",
@@ -128,6 +171,33 @@ def _check_log_continuation(user_id: int, lower: str) -> str | None:
     return ctx["sphere"]
 
 
+def _parse_direct_log_intent(raw: str) -> tuple[str, str] | None:
+    """
+    Пытается извлечь (sphere, entry) из сообщения без обращения к LLM.
+    Покрывает три синтаксиса:
+      A  "Запиши в питание: текст"   / "В питание запиши: текст"
+      B  "Текст лога, запиши в питание"
+    Возвращает (очищенная_сфера, текст_записи) или None.
+    """
+    m = _OBSIDIAN_LOG_FULL_RE.match(raw)
+    if m:
+        sphere_raw = (m.group("sphere1") or m.group("sphere2") or "").strip()
+        entry = (m.group("entry1") or m.group("entry2") or "").strip()
+        sphere = re.sub(r"[^\w]", "", sphere_raw, flags=re.UNICODE).lower()
+        if sphere and entry:
+            return sphere, entry
+
+    m2 = _ENTRY_FIRST_LOG_RE.match(raw)
+    if m2:
+        sphere_raw = m2.group("sphere3").strip()
+        entry = m2.group("entry3").strip()
+        sphere = re.sub(r"[^\w]", "", sphere_raw, flags=re.UNICODE).lower()
+        if sphere and entry:
+            return sphere, entry
+
+    return None
+
+
 def _extract_log_sphere(m: re.Match) -> str | None:
     """Возвращает очищенное имя сферы из матча _OBSIDIAN_LOG_RE."""
     raw = m.group("sphere1") or m.group("sphere2") or ""
@@ -136,18 +206,21 @@ def _extract_log_sphere(m: re.Match) -> str | None:
 
 
 def _is_obsidian_log_intent(lower: str) -> bool:
-    """True если сообщение — запись-в-сферу, а не постановка будущей задачи."""
+    """True если сообщение явно адресовано в сферу, но текст записи не указан."""
     if _OBSIDIAN_LOG_RE.match(lower):
         return True
-    # Запасной вариант: явная сфера + глагол-маркер в любом месте текста
     first_word = lower.split()[0] if lower.split() else ""
     has_sphere = any(kw in lower for kw in _LOG_SPHERE_KEYWORDS)
     has_verb = any(v in lower for v in _LOG_LEADING_VERBS)
     if first_word == "в":
-        # "в питание добавь ...", "в дневник отметь ..."
         return has_sphere and has_verb
     return first_word in _LOG_LEADING_VERBS and has_sphere
 
+
+# ---------------------------------------------------------------------------
+# Диспетчер входящих текстовых сообщений
+# Порядок проверок критичен — не менять без понимания всей цепочки.
+# ---------------------------------------------------------------------------
 
 @main_router.message(StateFilter(None), F.text, ~F.text.startswith("/"))
 async def dispatch_text(message: Message) -> None:
@@ -155,7 +228,16 @@ async def dispatch_text(message: Message) -> None:
     user_id = message.from_user.id if message.from_user else 0
     lower = raw.lower()
 
-    # — Obsidian-лог: явная сфера в сообщении → LLM (он вызовет append_obsidian_log и обновит кэш) —
+    # ── 1. ПРЯМОЙ ЛОГ: сфера + текст извлекаются regex, LLM не нужен ──────────
+    # "Запиши в питание: съел стейк" / "Съел стейк, запиши в питание"
+    direct = _parse_direct_log_intent(raw)
+    if direct is not None:
+        sphere, entry = direct
+        logger.info("Direct log (sphere=%s) → append for %r", sphere, raw)
+        await _run_log_direct(message, user_id, sphere, entry)
+        return
+
+    # ── 2. ЯВНАЯ СФЕРА БЕЗ ТЕКСТА: "Запиши в питание" → LLM уточнит ────────────
     if _is_obsidian_log_intent(lower):
         m = _OBSIDIAN_LOG_RE.match(lower)
         sphere = _extract_log_sphere(m) if m else None
@@ -163,22 +245,31 @@ async def dispatch_text(message: Message) -> None:
         await _run_llm_chat(message, user_id, raw)
         return
 
-    # — Продолжение лога: "еще/ещё/также/плюс/добавь" + свежий кэш → прямой вызов без LLM —
+    # ── 3. ПРОДОЛЖЕНИЕ ЛОГА: "ещё съел 300г" + свежий кэш ──────────────────────
     continuation_sphere = _check_log_continuation(user_id, lower)
     if continuation_sphere is not None:
-        # Убираем вводное слово для чистоты записи: "еще съел 300г" → "съел 300г"
         entry = _LOG_CONTINUATION_RE.sub("", raw, count=1).lstrip(":, ").strip() or raw
         logger.info("Log continuation (sphere=%s) → direct append for %r", continuation_sphere, raw)
         await _run_log_direct(message, user_id, continuation_sphere, entry)
         return
 
-    # — Явные команды → сразу LLM, минуя rule-based —
+    # ── 4. ПРОШЕДШЕЕ ВРЕМЯ → LLM выбирает между complete_task и append_obsidian_log ──
+    # LLM получает полный список инструментов + список активных задач в промпте.
+    # Если прошедшее действие совпадает с активной задачей → complete_task.
+    # Если нет совпадения с задачей, но это трекинг-факт → append_obsidian_log.
+    # Проверяется ДО task_engine, чтобы эти сообщения не попали в rule-based парсер.
+    if _FACT_VERBS_RE.search(lower):
+        logger.info("Past-tense verb detected → LLM (complete_task or log) for %r", raw)
+        await _run_llm_chat(message, user_id, raw)
+        return
+
+    # ── 5. ЯВНЫЕ КОМАНДЫ к ассистенту → LLM, минуя rule-based ──────────────────
     if any(kw in lower for kw in COMMAND_KEYWORDS):
         logger.info("Keyword match → LLM for %r", raw)
         await _run_llm_chat(message, user_id, raw)
         return
 
-    # — Rule-based / LLM parsing path —
+    # ── 6. RULE-BASED ПАРСЕР / FALLBACK → LLM ───────────────────────────────────
     try:
         parsed_list: list[ParseResult] = await asyncio.to_thread(parse_task, raw)
     except ValueError:
@@ -211,7 +302,7 @@ async def dispatch_text(message: Message) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Прямая запись в Obsidian-лог (для продолжений, без LLM-раунда)
+# Прямая запись в Obsidian-лог (без LLM-раунда)
 # ---------------------------------------------------------------------------
 
 async def _run_log_direct(message: Message, user_id: int, sphere: str, entry: str) -> None:
@@ -221,8 +312,8 @@ async def _run_log_direct(message: Message, user_id: int, sphere: str, entry: st
         if result.startswith("Ошибка"):
             await message.answer(result)
         else:
-            _set_log_context(user_id, sphere)  # обновляем TTL для следующего продолжения
-            await message.answer(f"📝 Добавлено в {sphere}.")
+            _set_log_context(user_id, _resolve_sphere(sphere))  # нормализуем перед сохранением
+            await message.answer(f"📝 Добавлено в {_resolve_sphere(sphere)}.")
     except Exception:
         logger.exception("Direct log failed for user=%s sphere=%s", user_id, sphere)
         await message.answer("⚠️ Не смог записать. Попробуй позже.")
@@ -243,14 +334,12 @@ async def _run_llm_chat(message: Message, user_id: int, raw: str) -> None:
             tool_calls = response_msg.get("tool_calls") or []
 
             if tool_calls:
-                # Добавляем ответ ассистента с tool_calls в историю
                 msgs.append({
                     "role": "assistant",
                     "content": response_msg.get("content"),
                     "tool_calls": tool_calls,
                 })
 
-                # Выполняем все инструменты
                 for tc in tool_calls:
                     result = await execute_tool_call(tc, session, user_id)
                     logger.info("Tool %r → %s", tc["function"]["name"], result[:120])
@@ -266,22 +355,6 @@ async def _run_llm_chat(message: Message, user_id: int, raw: str) -> None:
                         except (json.JSONDecodeError, KeyError):
                             pass
 
-                    # Side effect: предложить сохранить память
-                    if tc["function"]["name"] == "propose_memory_save":
-                        try:
-                            outer = json.loads(result)
-                            if outer.get("ok"):
-                                inner = json.loads(outer["result"])
-                                await send_memory_proposal(
-                                    message.bot,
-                                    user_id,
-                                    inner["memory_id"],
-                                    inner["content"],
-                                    inner["memory_type"],
-                                )
-                        except (json.JSONDecodeError, KeyError):
-                            logger.warning("Could not parse propose_memory_save result")
-
                     msgs.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
@@ -292,7 +365,6 @@ async def _run_llm_chat(message: Message, user_id: int, raw: str) -> None:
                 final_msg = await asyncio.to_thread(call_deepseek_chat, msgs)
                 reply = (final_msg.get("content") or "").strip() or "Готово."
             else:
-                # LLM ответил текстом без вызова инструментов
                 reply = (response_msg.get("content") or "").strip() or "Понял."
 
             session.commit()

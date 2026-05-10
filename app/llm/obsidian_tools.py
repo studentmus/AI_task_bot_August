@@ -104,6 +104,45 @@ async def append_obsidian_log(sphere: str, entry: str) -> str:
     return f"Запись добавлена. Git: {git_result}"
 
 
+_MEMORY_FILE = "_bot/bot_memory.md"
+
+
+def _memory_path() -> Path:
+    return Path(settings.obsidian_vault_path) / "_bot" / "bot_memory.md"
+
+
+async def save_fact_to_obsidian(fact: str) -> str:
+    path = _memory_path()
+    # Создаём папку _bot/ если её вдруг нет (не должно случаться, но на всякий случай)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    line = f"- [{date_str}] Факт: {fact}\n"
+
+    try:
+        async with aiofiles.open(path, "a", encoding="utf-8") as f:
+            await f.write(line)
+    except OSError as exc:
+        logger.error("save_fact_to_obsidian write: %s", exc)
+        return f"Ошибка записи файла памяти: {exc}"
+
+    git_result = await _git_sync(_MEMORY_FILE, "bot_memory")
+    return f"Факт сохранён в память. Git: {git_result}"
+
+
+async def read_memory_from_obsidian() -> str:
+    path = _memory_path()
+    try:
+        async with aiofiles.open(path, encoding="utf-8") as f:
+            content = await f.read()
+        return content.strip() or "Файл памяти пуст."
+    except FileNotFoundError:
+        return f"Файл памяти {_MEMORY_FILE} не найден."
+    except OSError as exc:
+        logger.error("read_memory_from_obsidian: %s", exc)
+        return f"Ошибка чтения файла памяти: {exc}"
+
+
 async def _git_sync(rel_path: str, sphere: str) -> str:
     cwd = settings.obsidian_vault_path
 
