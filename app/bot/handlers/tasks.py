@@ -100,10 +100,10 @@ async def cb_confirm(callback: CallbackQuery) -> None:
         task = repo.get(task_id)
 
     card = _build_card(task).replace("\nДобавить в календарь?", "")
-    if uid:
-        text = f"✅ Добавлено в календарь.\n\n{card}"
+    if task and task.radicale_uid:
+        text = f"✅ Добавлено в Google Calendar.\n\n{card}"
     else:
-        text = f"✅ Подтверждено, но синхронизация календаря недоступна.\n\n{card}"
+        text = f"✅ Подтверждено. Синхронизация с Google Calendar не удалась.\n\n{card}"
 
     await callback.message.edit_text(text)
 
