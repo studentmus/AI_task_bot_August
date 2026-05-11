@@ -75,11 +75,20 @@ class TaskActions:
         all_day: bool = True,
     ) -> str:
         task = self._get_or_raise(task_id)
+        name = task.text
+        google_event_id = task.radicale_uid or None
         self._repo.move_task(task_id, new_date, new_time, all_day)
         self._session.commit()
         time_part = f" в {new_time}" if new_time else ""
         logger.info("Task moved id=%s → %s%s", task_id, new_date, time_part)
-        return f"📅 «{task.text}» перенесено на {new_date}{time_part}."
+        if google_event_id:
+            updated_task = self._repo.get(task_id)
+            try:
+                from app.domain.google_calendar import update_event
+                update_event(google_event_id, updated_task)
+            except Exception:
+                logger.exception("Google Calendar update failed for task id=%s", task_id)
+        return f"📅 «{name}» перенесено на {new_date}{time_part}."
 
     def snooze_task(
         self,
@@ -88,11 +97,20 @@ class TaskActions:
         until_time: Optional[str] = None,
     ) -> str:
         task = self._get_or_raise(task_id)
+        name = task.text
+        google_event_id = task.radicale_uid or None
         self._repo.snooze_task(task_id, until_date, until_time)
         self._session.commit()
         time_part = f" в {until_time}" if until_time else ""
         logger.info("Task snoozed id=%s → %s%s", task_id, until_date, time_part)
-        return f"⏰ «{task.text}» отложено до {until_date}{time_part}. Счётчик пингов сброшен."
+        if google_event_id:
+            updated_task = self._repo.get(task_id)
+            try:
+                from app.domain.google_calendar import update_event
+                update_event(google_event_id, updated_task)
+            except Exception:
+                logger.exception("Google Calendar update failed for task id=%s", task_id)
+        return f"⏰ «{name}» отложено до {until_date}{time_part}. Счётчик пингов сброшен."
 
     # ------------------------------------------------------------------
     # Метаданные

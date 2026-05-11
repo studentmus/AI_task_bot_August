@@ -112,9 +112,17 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
 
     if name == "move_task":
         new_time = args.get("new_time") or None
+        task_id = _resolve_task_id(args, session, user_id)
+        # new_date опционален: если не передан, берём текущую дату задачи
+        new_date = args.get("new_date") or None
+        if not new_date:
+            task_obj = TaskRepo(session).get(task_id)
+            if task_obj is None:
+                raise ValueError(f"Задача {task_id} не найдена.")
+            new_date = task_obj.suggested_date
         return actions.move_task(
-            task_id=_resolve_task_id(args, session, user_id),
-            new_date=args["new_date"],
+            task_id=task_id,
+            new_date=new_date,
             new_time=new_time,
             all_day=new_time is None,
         )
@@ -138,13 +146,6 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
             time_part = t.event_time if (not t.all_day and t.event_time) else "весь день"
             lines.append(f"id={t.id} | {time_part} | [{t.status}] {t.text}")
         return "\n".join(lines)
-
-    if name == "get_active_task":
-        task = actions.get_active_task(user_id)
-        if task is None:
-            return "Активных задач нет."
-        time_part = task.event_time if (not task.all_day and task.event_time) else "весь день"
-        return f"id={task.id} | {task.suggested_date} | {time_part} | [{task.status}] {task.text}"
 
     if name == "save_fact_to_obsidian":
         from app.llm.obsidian_tools import save_fact_to_obsidian

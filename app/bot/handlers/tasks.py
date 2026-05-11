@@ -121,13 +121,15 @@ async def cb_cancel(callback: CallbackQuery) -> None:
 
     with SessionLocal() as session:
         repo = TaskRepo(session)
-        deleted = repo.delete(task_id)
+        task = repo.get(task_id)
+        if task is None:
+            await callback.message.edit_text("⚠️ Задача не найдена.")
+            return
+        # Мягкое удаление: статус → cancelled, физически строка остаётся
+        task.status = "cancelled"
         session.commit()
 
-    if deleted:
-        await callback.message.edit_text("❌ Задача удалена.")
-    else:
-        await callback.message.edit_text("⚠️ Задача не найдена.")
+    await callback.message.edit_text("Задача отменена.")
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +232,13 @@ async def fsm_edit_date_receive(message: Message, state: FSMContext) -> None:
         session.commit()
         task = repo.get(task_id)
 
+        if task and task.radicale_uid:
+            try:
+                from app.domain.google_calendar import update_event
+                update_event(task.radicale_uid, task)
+            except Exception:
+                logger.exception("Google Calendar update failed for task id=%s", task_id)
+
     if not ok or task is None:
         await message.answer("⚠️ Не удалось обновить задачу.")
         await state.clear()
@@ -287,6 +296,13 @@ async def fsm_edit_time_receive(message: Message, state: FSMContext) -> None:
         ok = repo.update_time(task_id, event_time, all_day)
         session.commit()
         task = repo.get(task_id)
+
+        if task and task.radicale_uid:
+            try:
+                from app.domain.google_calendar import update_event
+                update_event(task.radicale_uid, task)
+            except Exception:
+                logger.exception("Google Calendar update failed for task id=%s", task_id)
 
     if not ok or task is None:
         await message.answer("⚠️ Не удалось обновить задачу.")

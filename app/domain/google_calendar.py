@@ -128,6 +128,42 @@ def create_event(task) -> str | None:
         return None
 
 
+def update_event(google_event_id: str, task) -> bool:
+    """Обновляет дату/время события в Google Calendar.
+
+    Google API запрещает одновременное наличие 'date' и 'dateTime' в объектах start/end.
+    При переключении форматов (all-day ↔ timed) явно зануляем противоположное поле,
+    чтобы избежать 400 Invalid start time.
+    """
+    try:
+        service = _get_service()
+        full_body = _build_event_body(task)
+
+        start = dict(full_body["start"])
+        end = dict(full_body["end"])
+
+        # Явно убираем конкурирующий формат (null = удалить поле через JSON Merge Patch)
+        if "dateTime" in start:
+            start["date"] = None      # was all-day → now timed: clear date
+        else:
+            start["dateTime"] = None  # was timed → now all-day: clear dateTime
+        if "dateTime" in end:
+            end["date"] = None
+        else:
+            end["dateTime"] = None
+
+        service.events().patch(
+            calendarId="primary",
+            eventId=google_event_id,
+            body={"start": start, "end": end},
+        ).execute()
+        logger.info("Event updated: event_id=%s task_id=%s", google_event_id, task.id)
+        return True
+    except Exception as exc:
+        logger.error("update_event failed for event_id=%s: %s", google_event_id, exc)
+        return False
+
+
 def delete_event(local_task_id: int, google_event_id: str | None = None) -> bool:
     """Удаляет событие из Google Calendar.
     Сначала пробует прямое удаление по google_event_id (быстро и надёжно),

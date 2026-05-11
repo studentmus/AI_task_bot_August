@@ -57,6 +57,16 @@ class MemoryItem(Base):
     confirmed_at = Column(String)
 
 
+class DialogMessage(Base):
+    __tablename__ = "dialog_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    role = Column(String, nullable=False)      # "user" | "assistant"
+    content = Column(String, nullable=False)
+    created_at = Column(String, nullable=False)
+
+
 def _apply_migrations() -> None:
     """Добавляет новые колонки в существующую БД (idempotent)."""
     existing = {col["name"] for col in inspect(engine).get_columns("tasks")}

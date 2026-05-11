@@ -52,6 +52,41 @@ COMMAND_KEYWORDS = [
     "напомни", "отложи", "какие задачи", "план на", "запомни",
 ]
 
+# ---------------------------------------------------------------------------
+# Conversation Guard: отказы и вежливые ответы → сразу LLM, минуя все парсеры
+# ---------------------------------------------------------------------------
+
+# Мягкая проверка: сообщение НАЧИНАЕТСЯ с разговорного слова ИЛИ содержит фразу-отказ.
+# Не требует, чтобы 100% слов были «разговорными» — достаточно любого из маркеров.
+_CONVERSATION_RE = re.compile(
+    # Начинается с разговорного слова/фразы
+    r"^(?:нет|да|ок|окей|хорошо|спасибо|понял|понятно|ладно|давай|ага|угу"
+    r"|отлично|супер|класс|пока|стоп|всё)\b"
+    # ИЛИ содержит явный отказ/отбой в любом месте
+    r"|\bне\s+нужно\b"
+    r"|\bне\s+надо\b"
+    r"|\bотбой\b"
+    r"|\bне\s+создавай\b"
+    r"|\bне\s+добавляй\b",
+    re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
+# Контекстное редактирование: местоимения + глаголы изменения → LLM (move_task)
+# ---------------------------------------------------------------------------
+
+# Перехватывает фразы типа "поставь ей время", "измени её дату", "сделай это на 15:00".
+# Любое совпадение = почти наверняка контекстная правка существующей задачи.
+_CONTEXT_EDIT_RE = re.compile(
+    # Местоимения-ссылки на задачу из контекста диалога
+    r"\b(?:ей|её|ему|им|эту|этот|этой|эта)\b"
+    r"|"
+    # Глаголы изменения (bare, без "задачу" рядом — иначе поймали бы в COMMAND_KEYWORDS)
+    r"\b(?:поставь|измени|сделай|поменяй|установи)\b",
+    re.IGNORECASE,
+)
+
+
 # Гарда для вопросов: rule-based парсер не должен трогать вопросительные сообщения.
 # Знак «?» надёжно перехватывает большинство случаев; остальные паттерны — русские
 # вопросительные конструкции без знака вопроса.
@@ -172,25 +207,8 @@ def _set_log_context(user_id: int, sphere: str) -> None:
     USER_LOG_CONTEXT[user_id] = {"sphere": sphere, "timestamp": datetime.now()}
 
 
-# ---------------------------------------------------------------------------
-# Краткосрочная история диалога (in-memory, последние N сообщений)
-# ---------------------------------------------------------------------------
-
-_HISTORY_MAX = 6  # 3 хода = 3 user + 3 assistant
-
-# user_id → [{"role": "user"/"assistant", "content": str}, ...]
-DIALOG_HISTORY: dict[int, list[dict]] = {}
-
-
-def _history_get(user_id: int) -> list[dict]:
-    return list(DIALOG_HISTORY.get(user_id, []))
-
-
-def _history_append(user_id: int, role: str, content: str) -> None:
-    hist = DIALOG_HISTORY.setdefault(user_id, [])
-    hist.append({"role": role, "content": content})
-    if len(hist) > _HISTORY_MAX:
-        DIALOG_HISTORY[user_id] = hist[-_HISTORY_MAX:]
+# История диалога хранится в SQLite (app/storage/dialog_repo.py).
+# In-memory кэш не нужен — репо читает/пишет напрямую в БД.
 
 
 def _check_log_continuation(user_id: int, lower: str) -> str | None:
@@ -270,6 +288,14 @@ async def dispatch_text(message: Message) -> None:
         await _run_llm_chat(message, user_id, raw)
         return
 
+    # ── 0.5. CONVERSATION GUARD: отказы и вежливые ответы → LLM как чат ─────────
+    # Мягкая гарда: достаточно начала с разговорного слова или фразы-отказа.
+    # "Нет, спасибо, пока не нужно" → LLM; "поставь ей время" пройдёт дальше.
+    if _CONVERSATION_RE.search(lower):
+        logger.info("Conversation/refusal detected → LLM for %r", raw)
+        await _run_llm_chat(message, user_id, raw)
+        return
+
     # ── 1. ПРЯМОЙ ЛОГ: сфера + текст извлекаются regex, LLM не нужен ──────────
     # "Запиши в питание: съел стейк" / "Съел стейк, запиши в питание"
     direct = _parse_direct_log_intent(raw)
@@ -308,6 +334,14 @@ async def dispatch_text(message: Message) -> None:
     # ── 5. ЯВНЫЕ КОМАНДЫ к ассистенту → LLM, минуя rule-based ──────────────────
     if any(kw in lower for kw in COMMAND_KEYWORDS):
         logger.info("Keyword match → LLM for %r", raw)
+        await _run_llm_chat(message, user_id, raw)
+        return
+
+    # ── 5.5. КОНТЕКСТНОЕ РЕДАКТИРОВАНИЕ: местоимение или глагол изменения → LLM ──
+    # "и поставь ей время на 20:00", "измени её дату", "сделай это на 15:00"
+    # Перехватывается ДО rule-based парсера — иначе создаётся фантомная задача.
+    if _CONTEXT_EDIT_RE.search(lower):
+        logger.info("Context edit detected → LLM for %r", raw)
         await _run_llm_chat(message, user_id, raw)
         return
 
@@ -369,13 +403,19 @@ async def _run_llm_chat(message: Message, user_id: int, raw: str) -> None:
     reply: str | None = None
     try:
         with SessionLocal() as session:
+            from app.storage.dialog_repo import DialogRepo
+            dialog_repo = DialogRepo(session)
+
+            # Ленивая очистка устаревших сообщений (TTL=24h) для этого пользователя
+            dialog_repo.purge_old(user_id)
+
             # build_messages возвращает [system_msg, user_msg]
             base = build_messages(session, user_id, raw)
             system_msg = base[0]        # {"role": "system", "content": "..."}
             current_user_msg = base[-1]  # {"role": "user",   "content": raw}
 
-            # Инъекция истории между системным промптом и текущим сообщением
-            msgs = [system_msg] + _history_get(user_id) + [current_user_msg]
+            # Инъекция истории из SQLite между системным промптом и текущим сообщением
+            msgs = [system_msg] + dialog_repo.get_recent(user_id) + [current_user_msg]
 
             # Первый вызов: с инструментами
             response_msg = await asyncio.to_thread(call_deepseek_chat, msgs, TOOLS)
@@ -424,9 +464,16 @@ async def _run_llm_chat(message: Message, user_id: int, raw: str) -> None:
 
     reply = _clean_reply(reply) or "Готово."
 
-    # Сохраняем ход в историю диалога для следующего сообщения
-    _history_append(user_id, "user", raw)
-    _history_append(user_id, "assistant", reply)
+    # Сохраняем ход в SQLite (очищенный ответ — тот, что получил пользователь)
+    try:
+        with SessionLocal() as hist_session:
+            from app.storage.dialog_repo import DialogRepo
+            repo = DialogRepo(hist_session)
+            repo.append(user_id, "user", raw)
+            repo.append(user_id, "assistant", reply)
+            hist_session.commit()
+    except Exception:
+        logger.warning("Dialog history write failed for user=%s", user_id)
 
     try:
         await message.answer(reply)

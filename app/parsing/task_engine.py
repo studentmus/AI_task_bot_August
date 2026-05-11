@@ -85,9 +85,105 @@ def today_local() -> date:
         return date.today()
 
 
+# ---------------------------------------------------------------------------
+# Стоп-фразы: служебные слова, которые пользователь адресует боту,
+# а не включает в название задачи.
+# Порядок важен: более длинные (специфичные) варианты — раньше коротких,
+# иначе "создай" будет срабатывать раньше "создай задачу".
+# ---------------------------------------------------------------------------
+STOP_PHRASES: tuple[str, ...] = (
+    # команды создания / планирования
+    "создай задачу",       "создай напоминание",      "создай",
+    "добавь задачу",       "добавь напоминание",       "добавь в список",
+    "поставь задачу",      "поставь напоминание",      "поставь",
+    "запланируй",          "запланировать",
+    "внеси задачу",        "внеси",
+    # напоминания
+    "напомни мне",         "напомни",
+    "напомнить мне",       "напомнить",
+    # вводные маркеры намерения
+    "нужно не забыть",     "не забыть",                "не забудь",
+    "хочу не забыть",
+    "нужно мне",           "нужно",
+    "надо мне",            "надо",
+    "хочу мне",            "хочу",
+    # маркер «задача» как артикль
+    "задача:",             "задачу",                   "задача",
+)
+
+
 def cleanup_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text, flags=re.UNICODE).strip(" ,.!?;:-\n\t")
     return text or "Без названия"
+
+
+# ---------------------------------------------------------------------------
+# Парсинг временны́х диапазонов «с X до Y [суффикс]»
+# ---------------------------------------------------------------------------
+
+# Суффиксы, определяющие AM/PM в разговорном русском
+_AMPM_SUFFIX = r"(?:утра|дня|вечера|ночи|am|pm)"
+
+# Паттерн диапазона: «с X[:MM] [суф?] до Y[:MM] [суф?]»
+# Группы: 1=start_h, 2=start_m, sfx1=start_sfx, 3=end_h, 4=end_m, sfx2=end_sfx
+_TIME_RANGE_FULL_RE = re.compile(
+    r"\bс\s+"
+    r"(\d{1,2})(?:[:](\d{2}))?"
+    r"\s*(?P<sfx1>" + _AMPM_SUFFIX + r")?"
+    r"\s+до\s+"
+    r"(\d{1,2})(?:[:](\d{2}))?"
+    r"\s*(?P<sfx2>" + _AMPM_SUFFIX + r")?",
+    re.IGNORECASE,
+)
+
+
+def _adjust_hour(h: int, suffix: str | None) -> int:
+    """Переводит час в 24-часовой формат на основе разговорного суффикса."""
+    if not suffix:
+        return h
+    s = suffix.lower()
+    if s in ("дня", "вечера", "pm") and h < 12:
+        return h + 12
+    if s in ("утра", "am") and h == 12:
+        return 0
+    # "ночи": 1-5 ночи = ранее утро (01-05), 11 ночи = 23 — оставляем как есть
+    return h
+
+
+def _extract_time_range_natural(text: str) -> str | None:
+    """Извлекает диапазон HH:MM-HH:MM из фраз типа 'с 10 до 4 дня', 'с 9 утра до 5 вечера'.
+    Возвращает строку 'HH:MM-HH:MM' или None если не нашёл."""
+    m = _TIME_RANGE_FULL_RE.search(text.lower())
+    if not m:
+        return None
+    sh = _adjust_hour(int(m.group(1)), m.group("sfx1"))
+    sm = int(m.group(2)) if m.group(2) else 0
+    eh = _adjust_hour(int(m.group(3)), m.group("sfx2"))
+    em = int(m.group(4)) if m.group(4) else 0
+    if not (0 <= sh <= 23 and 0 <= sm <= 59 and 0 <= eh <= 23 and 0 <= em <= 59):
+        return None
+    return f"{sh:02d}:{sm:02d}-{eh:02d}:{em:02d}"
+
+
+def strip_stop_phrases(text: str) -> str:
+    """Итеративно удаляет стоп-фразы из начала названия задачи.
+
+    Пример: 'создай задачу нужно встреча' → 'встреча'
+    Если после стрипа остаётся пустая строка — возвращает исходный текст.
+    """
+    result = text
+    changed = True
+    while changed:
+        changed = False
+        lower_r = result.lower()
+        for phrase in STOP_PHRASES:
+            if lower_r.startswith(phrase):
+                result = result[len(phrase):].lstrip(" ,:;-\t")
+                changed = True
+                break
+    cleaned = cleanup_text(result)
+    # Защита: если всё оказалось стоп-словами — не затираем текст в «Без названия»
+    return cleaned if cleaned and cleaned != "Без названия" else text
 
 
 def remove_span(text: str, start: int, end: int) -> str:
@@ -108,6 +204,8 @@ def has_time_signal(text: str) -> bool:
         r"\b(?:в|к)\s*\d{1,2}\s*(?:час|часа|часов|ч)?\b",
         r"\b\d{1,2}\s*(?:час|часа|часов)\b",
         r"\b\d{1,2}\s*(?:am|pm)\b",
+        # диапазон "с X до Y" — на естественном языке без двоеточий
+        r"\bс\s+\d{1,2}(?:[:.]\d{2})?\s+до\s+\d{1,2}",
     ]
     if any(re.search(p, lower, flags=re.IGNORECASE) for p in explicit_patterns):
         return True
@@ -208,6 +306,10 @@ def parse_rule_based(text: str, base: Optional[date] = None) -> list[ParseResult
 
 def extract_time_heuristic(text: str) -> Optional[str]:
     lower = text.lower()
+    # Диапазон «с X до Y [суффикс]» — проверяем первым
+    range_result = _extract_time_range_natural(lower)
+    if range_result:
+        return range_result
     for word, t in TIME_WORDS.items():
         if word in lower:
             return t
@@ -226,6 +328,9 @@ def extract_time_heuristic(text: str) -> Optional[str]:
 
 def remove_time_words(text: str) -> str:
     patterns = [
+        # Диапазон «с X до Y [суффикс]» — первым, чтобы не оставлять обрывки
+        r"\bс\s+\d{1,2}(?:[:.]\d{2})?\s*(?:утра|дня|вечера|ночи|am|pm)?"
+        r"\s+до\s+\d{1,2}(?:[:.]\d{2})?\s*(?:утра|дня|вечера|ночи|am|pm)?\b",
         r"\b(?:в|к)\s*\d{1,2}[:.]\d{2}\b",
         r"\b\d{1,2}[:.]\d{2}\b",
         r"\b(?:в|к)?\s*\d{1,2}\s*(?:час|часа|часов|ч)\b",
@@ -243,7 +348,13 @@ def remove_time_words(text: str) -> str:
 
 
 def validate_date(value: str) -> str:
-    return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+    value = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(value, fmt).date().isoformat()
+        except ValueError:
+            continue
+    raise ValueError(f"Invalid date: {value!r}")
 
 
 def _validate_single_time(value: str) -> str:
@@ -383,6 +494,13 @@ def _is_complex_text(text: str) -> bool:
     return bool(_COMPLEX_SIGNALS_RE.search(text)) or len(text) > 40
 
 
+def _apply_stop_phrases(results: list[ParseResult]) -> list[ParseResult]:
+    """Прогоняет clean_text каждого результата через strip_stop_phrases."""
+    for r in results:
+        r.clean_text = strip_stop_phrases(r.clean_text)
+    return results
+
+
 def parse_task(text: str, base: Optional[date] = None) -> list[ParseResult]:
     base = base or today_local()
     text = cleanup_text(text)
@@ -391,10 +509,10 @@ def parse_task(text: str, base: Optional[date] = None) -> list[ParseResult]:
     if _is_complex_text(text):
         logger.info("Complex text → LLM for %r", text)
         try:
-            return parse_llm(text, base)
+            return _apply_stop_phrases(parse_llm(text, base))
         except Exception:
             logger.exception("LLM failed, using fallback for %r", text)
-            return parse_complex_fallback(text, base)
+            return _apply_stop_phrases(parse_complex_fallback(text, base))
 
     route = route_task(text)
     logger.info("Router: %s for %r", route, text)
@@ -402,16 +520,16 @@ def parse_task(text: str, base: Optional[date] = None) -> list[ParseResult]:
     if route == "rule":
         results = parse_rule_based(text, base)
         if results:
-            return results
+            return _apply_stop_phrases(results)
         raise ValueError(
             "Не нашёл дату в тексте. Попробуй: завтра, 4 мая, в пятницу, через 3 дня."
         )
 
     try:
-        return parse_llm(text, base)
+        return _apply_stop_phrases(parse_llm(text, base))
     except Exception:
         logger.exception("LLM failed, using fallback for %r", text)
-        return parse_complex_fallback(text, base)
+        return _apply_stop_phrases(parse_complex_fallback(text, base))
 
 
 def parse_date_input(text: str) -> ParseResult:
@@ -428,19 +546,11 @@ def parse_time_input(text: str) -> tuple[Optional[str], bool]:
     if m:
         return f"{_validate_single_time(m.group(1))}-{_validate_single_time(m.group(2))}", False
 
-    # Диапазон на естественном языке: "с 10 до 12", "с 10:30 до 14:00"
-    m = re.search(
-        r"\bс\s+(\d{1,2}(?:[:.]\d{2})?)\s+до\s+(\d{1,2}(?:[:.]\d{2})?)\b",
-        lower,
-    )
-    if m:
-        start_raw = m.group(1).replace(".", ":")
-        if ":" not in start_raw:
-            start_raw += ":00"
-        end_raw = m.group(2).replace(".", ":")
-        if ":" not in end_raw:
-            end_raw += ":00"
-        return f"{_validate_single_time(start_raw)}-{_validate_single_time(end_raw)}", False
+    # Диапазон на естественном языке: "с 10 до 12", "с 10 до 4 дня", "с 9 утра до 5 вечера"
+    range_result = _extract_time_range_natural(lower)
+    if range_result:
+        start_str, end_str = range_result.split("-")
+        return f"{_validate_single_time(start_str)}-{_validate_single_time(end_str)}", False
 
     time_str = extract_time_heuristic(lower)
     if not time_str:

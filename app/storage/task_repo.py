@@ -1,9 +1,21 @@
 from datetime import date, datetime
 from typing import Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.storage.db import Task
+
+
+def _normalize_date(value: str) -> str:
+    """Ensure date is ISO YYYY-MM-DD regardless of how it arrived."""
+    value = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(value, fmt).date().isoformat()
+        except ValueError:
+            continue
+    raise ValueError(f"Cannot normalize date: {value!r}")
 
 
 class TaskRepo:
@@ -26,7 +38,7 @@ class TaskRepo:
             text=text,
             category="inbox",
             importance="medium",
-            suggested_date=date,
+            suggested_date=_normalize_date(date),
             event_time=event_time,
             all_day=all_day,
             status="pending",
@@ -120,13 +132,16 @@ class TaskRepo:
     def find_recent_tasks_by_text(
         self, user_id: int, query: str, limit: int = 5
     ) -> list[Task]:
-        """Поиск активных задач по подстроке текста (case-insensitive)."""
+        """Поиск активных задач по подстроке текста.
+        Использует func.lower() на обеих сторонах — SQLite ilike не регистронезависим
+        для кириллицы без явного lowercasing."""
+        q_lower = query.strip().lower()
         return (
             self._s.query(Task)
             .filter(
                 Task.telegram_user_id == user_id,
                 Task.status.notin_(["done", "cancelled"]),
-                Task.text.ilike(f"%{query}%"),
+                func.lower(Task.text).like(f"%{q_lower}%"),
             )
             .order_by(Task.id.desc())
             .limit(limit)
