@@ -28,8 +28,22 @@ async def send_scheduled_ping(
 
     key = StorageKey(bot_id=bot.id, chat_id=user_id, user_id=user_id)
     ctx = FSMContext(storage=storage, key=key)
+
+    current = await ctx.get_state()
+
+    # Already waiting for a ping — skip to avoid duplicate prompts
+    if current == PingState.waiting_response:
+        logger.info("Ping skipped (already in PingState): file=%s", filename)
+        return
+
+    # User is mid-logging — set PingState but tell them logging is paused
+    in_log = current is not None and current.startswith("LogState:")
     await ctx.set_state(PingState.waiting_response)
     await ctx.update_data(filename=filename)
 
-    await bot.send_message(user_id, question)
-    logger.info("Ping sent → file=%s", filename)
+    text = question
+    if in_log:
+        text += "\n\n_(режим логирования приостановлен — ответь на вопрос, потом нажми кнопку сферы снова)_"
+
+    await bot.send_message(user_id, text)
+    logger.info("Ping sent → file=%s (interrupted_log=%s)", filename, in_log)

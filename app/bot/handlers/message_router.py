@@ -27,10 +27,18 @@ logger = logging.getLogger(__name__)
 # Теги, которые DeepSeek иногда «протекает» в финальный content.
 # Fullwidth vertical line U+FF5C (｜) — характерный маркер DeepSeek.
 _DEEPSEEK_TAG_RE = re.compile(r"</?｜[^>]*>", re.IGNORECASE)
+# DeepSeek иногда возвращает Markdown-разметку, хотя бот использует HTML-режим.
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+_MD_ITALIC_RE = re.compile(r"\*(.+?)\*", re.DOTALL)
+_MD_CODE_RE = re.compile(r"`(.+?)`", re.DOTALL)
 
 
 def _clean_reply(text: str) -> str:
-    return _DEEPSEEK_TAG_RE.sub("", text).strip()
+    text = _DEEPSEEK_TAG_RE.sub("", text)
+    text = _MD_BOLD_RE.sub(r"\1", text)    # **bold** → bold
+    text = _MD_ITALIC_RE.sub(r"\1", text)  # *italic* → italic
+    text = _MD_CODE_RE.sub(r"\1", text)    # `code` → code
+    return text.strip()
 
 
 main_router = Router(name="main")
@@ -50,6 +58,8 @@ COMMAND_KEYWORDS = [
     "что у меня", "покажи", "перенес", "перенеси", "выполнил",
     "удали", "удалить", "отмени", "добавь задачу", "поставь задачу",
     "напомни", "отложи", "какие задачи", "план на", "запомни",
+    # Глаголы изменения без местоимения (иначе попадают в _CONTEXT_EDIT_RE)
+    "поставь", "измени", "поменяй", "переименуй",
 ]
 
 # ---------------------------------------------------------------------------
@@ -78,11 +88,10 @@ _CONVERSATION_RE = re.compile(
 # Перехватывает фразы типа "поставь ей время", "измени её дату", "сделай это на 15:00".
 # Любое совпадение = почти наверняка контекстная правка существующей задачи.
 _CONTEXT_EDIT_RE = re.compile(
-    # Местоимения-ссылки на задачу из контекста диалога
-    r"\b(?:ей|её|ему|им|эту|этот|этой|эта)\b"
-    r"|"
-    # Глаголы изменения (bare, без "задачу" рядом — иначе поймали бы в COMMAND_KEYWORDS)
-    r"\b(?:поставь|измени|сделай|поменяй|установи)\b",
+    # Только местоимения-ссылки на конкретную задачу из контекста диалога.
+    # Глаголы убраны: "поставь/измени/поменяй" без местоимения — это новые команды,
+    # они идут через COMMAND_KEYWORDS. Оставляем только местоимения.
+    r"\b(?:ей|её|ему|им|эту|этот|этой|эта|этого|этой)\b",
     re.IGNORECASE,
 )
 
@@ -98,17 +107,37 @@ _READ_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Гарда «следующего шага»: детектирует запросы типа "что делать", "следующий шаг".
+# Проверяется ДО _QUESTION_RE, чтобы получить специализированный ответ, а не общий чат.
+_NEXT_STEP_RE = re.compile(
+    r"\bчто\s+(?:мне\s+)?(?:сейчас\s+)?делать\b"
+    r"|\bследующий\s+шаг\b"
+    r"|\bчто\s+делаем\b"
+    r"|\bпосоветуй\s+(?:что|куда|как)\b"
+    r"|\bс\s+чего\s+(?:начать|начнём|начнем)\b"
+    r"|\bчто\s+в\s+приоритете\b"
+    r"|\bчто\s+важнее\b"
+    r"|\bкуда\s+двигаться\b"
+    r"|\bдай\s+(?:один\s+)?шаг\b",
+    re.IGNORECASE,
+)
+
 # Гарда для вопросов: rule-based парсер не должен трогать вопросительные сообщения.
 # Знак «?» надёжно перехватывает большинство случаев; остальные паттерны — русские
 # вопросительные конструкции без знака вопроса.
 _QUESTION_RE = re.compile(
-    r"\?"                       # любой знак вопроса
-    r"|есть ли\b"               # "есть ли у меня задача"
-    r"|есть задача\b"           # "завтра есть задача попить воды"
-    r"|есть у меня\b"           # "есть у меня встреча"
-    r"|^есть\b"                 # начинается с "есть ..."
-    r"|^не напомнил\b"          # "не напомнил про X"
-    r"|будет ли\b",
+    r"\?"                           # любой знак вопроса
+    r"|есть ли\b"                   # "есть ли у меня задача"
+    r"|есть задача\b"               # "завтра есть задача попить воды"
+    r"|есть у меня\b"               # "есть у меня встреча"
+    r"|^есть\b"                     # начинается с "есть ..."
+    r"|^не напомнил\b"              # "не напомнил про X"
+    r"|будет ли\b"
+    r"|\bне\s+вижу\b"               # "не вижу в календаре"
+    r"|\bне\s+нашёл\b|\bне\s+нашел\b"  # "не нашёл задачу"
+    r"|\bне\s+показывает\b"         # "не показывает событие"
+    r"|\bпочему\b|\bзачем\b|\bкогда\b"  # вопросительные слова без "?"
+    r"|\bкуда\s+делась\b|\bгде\s+(?:задача|событие|запись)\b",
     re.IGNORECASE,
 )
 
@@ -303,7 +332,13 @@ async def dispatch_text(message: Message) -> None:
     user_id = message.from_user.id if message.from_user else 0
     lower = raw.lower()
 
-    # ── 0. ГАРДА ВОПРОСОВ — наивысший приоритет, до любых regex-парсеров ────────
+    # ── 0. СЛЕДУЮЩИЙ ШАГ — специализированный engine (энергия + GCal + алёрты) ──
+    if _NEXT_STEP_RE.search(lower):
+        logger.info("Next-step request → engine for %r", raw)
+        await _run_next_step(message, user_id)
+        return
+
+    # ── 0.5. ГАРДА ВОПРОСОВ — до любых regex-парсеров ────────────────────────
     # Rule-based парсер умеет только создавать задачи; вопросы он испортит.
     if _QUESTION_RE.search(lower):
         logger.info("Question detected → LLM for %r", raw)
@@ -401,18 +436,19 @@ async def dispatch_text(message: Message) -> None:
         repo = TaskRepo(session)
         for parsed_item in parsed_list:
             task_id = svc.create_task(parsed_item, user_id)
+            # Подтверждаем сразу и синхронизируем с Google Calendar —
+            # кнопка confirm больше не нужна.
+            svc.confirm_and_sync(task_id)
             task = repo.get(task_id)
             if task is not None:
-                card = _build_card(task, parser=parsed_item.parser)
-                kb = _build_keyboard(task_id)
-                messages_to_send.append((card, kb))
+                messages_to_send.append((_build_card(task), _build_keyboard(task_id)))
 
     if not messages_to_send:
-        await message.answer("⚠️ Задача записана, но не удалось её прочитать.")
+        await message.answer("⚠️ Не удалось создать задачу.")
         return
 
     for card, kb in messages_to_send:
-        await message.answer(card, reply_markup=kb)
+        await message.answer("✅ " + card, reply_markup=kb)
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +467,23 @@ async def _run_log_direct(message: Message, user_id: int, sphere: str, entry: st
     except Exception:
         logger.exception("Direct log failed for user=%s sphere=%s", user_id, sphere)
         await message.answer("⚠️ Не смог записать. Попробуй позже.")
+
+
+# ---------------------------------------------------------------------------
+# Next-step engine handler
+# ---------------------------------------------------------------------------
+
+async def _run_next_step(message: Message, user_id: int) -> None:
+    try:
+        from aiogram.enums import ChatAction
+        await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+        with SessionLocal() as session:
+            from app.domain.next_step import suggest_next_step
+            text = await suggest_next_step(session, user_id)
+        await message.answer(f"🎯 {text}")
+    except Exception:
+        logger.exception("next_step failed for user=%s", user_id)
+        await message.answer("⚠️ Не смог проанализировать. Попробуй позже.")
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +519,8 @@ async def _run_llm_chat(message: Message, user_id: int, raw: str) -> None:
                     "tool_calls": tool_calls,
                 })
 
+                created_task_ids: list[int] = []
+
                 for tc in tool_calls:
                     result = await execute_tool_call(tc, session, user_id)
                     logger.info("Tool %r → %s", tc["function"]["name"], result[:120])
@@ -481,16 +536,35 @@ async def _run_llm_chat(message: Message, user_id: int, raw: str) -> None:
                         except (json.JSONDecodeError, KeyError):
                             pass
 
+                    # Отслеживаем созданные задачи — покажем карточку с кнопками
+                    if tc["function"]["name"] == "create_task":
+                        try:
+                            parsed_result = json.loads(result)
+                            if parsed_result.get("ok"):
+                                m = re.search(r"\bid=(\d+)\b", parsed_result.get("result", ""))
+                                if m:
+                                    created_task_ids.append(int(m.group(1)))
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+
                     msgs.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
                         "content": result,
                     })
 
+                # Собираем карточки для созданных задач пока сессия открыта
+                task_cards: list[tuple] = []
+                for tid in created_task_ids:
+                    task = TaskRepo(session).get(tid)
+                    if task is not None:
+                        task_cards.append((_build_card(task), _build_keyboard(tid)))
+
                 # Финальный вызов без инструментов — получаем текстовый ответ
                 final_msg = await asyncio.to_thread(call_deepseek_chat, msgs)
                 reply = (final_msg.get("content") or "").strip() or "Готово."
             else:
+                task_cards = []
                 reply = (response_msg.get("content") or "").strip() or "Понял."
 
             session.commit()
@@ -522,3 +596,10 @@ async def _run_llm_chat(message: Message, user_id: int, raw: str) -> None:
             await message.answer(reply, parse_mode=None)
         else:
             raise
+
+    # Карточки с кнопками для задач, созданных через LLM tool create_task
+    for card, kb in task_cards:
+        try:
+            await message.answer(card, reply_markup=kb)
+        except Exception:
+            logger.warning("Failed to send task card after LLM create_task")

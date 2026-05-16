@@ -36,7 +36,7 @@ class Task(Base):
     suggested_date = Column(String)
     event_time = Column(String)
     all_day = Column(Boolean, default=True)
-    radicale_uid = Column(String)
+    google_event_id = Column(String)
     status = Column(String, default="pending")
     created_at = Column(String)
     telegram_user_id = Column(Integer)
@@ -57,6 +57,18 @@ class MemoryItem(Base):
     confirmed_at = Column(String)
 
 
+class LogEntry(Base):
+    __tablename__ = "log_entries"
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    user_id         = Column(Integer, nullable=False, index=True)
+    sphere          = Column(String, nullable=False, index=True)   # canonical: sleep, nutrition…
+    raw_text        = Column(String, nullable=False)
+    logged_at       = Column(String, nullable=False, index=True)   # "YYYY-MM-DD HH:MM" user TZ
+    created_at      = Column(String, nullable=False)
+    structured_data = Column(String, nullable=True)                # JSON blob, populated async
+
+
 class DialogMessage(Base):
     __tablename__ = "dialog_history"
 
@@ -68,15 +80,24 @@ class DialogMessage(Base):
 
 
 def _apply_migrations() -> None:
-    """Добавляет новые колонки в существующую БД (idempotent)."""
-    existing = {col["name"] for col in inspect(engine).get_columns("tasks")}
+    """Добавляет/переименовывает колонки в существующей БД (idempotent)."""
+    insp = inspect(engine)
+    existing = {col["name"] for col in insp.get_columns("tasks")}
     pending = []
+
     if "priority" not in existing:
         pending.append("ALTER TABLE tasks ADD COLUMN priority TEXT")
     if "last_ping_at" not in existing:
         pending.append("ALTER TABLE tasks ADD COLUMN last_ping_at TEXT")
     if "ping_count" not in existing:
         pending.append("ALTER TABLE tasks ADD COLUMN ping_count INTEGER DEFAULT 0")
+    if "radicale_uid" in existing and "google_event_id" not in existing:
+        pending.append("ALTER TABLE tasks RENAME COLUMN radicale_uid TO google_event_id")
+
+    if "log_entries" in insp.get_table_names():
+        existing_log = {col["name"] for col in insp.get_columns("log_entries")}
+        if "structured_data" not in existing_log:
+            pending.append("ALTER TABLE log_entries ADD COLUMN structured_data TEXT")
 
     if not pending:
         return

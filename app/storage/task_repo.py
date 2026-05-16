@@ -70,7 +70,7 @@ class TaskRepo:
             self._s.query(Task)
             .filter(
                 Task.status == "confirmed",
-                (Task.radicale_uid == None) | (Task.radicale_uid == ""),
+                (Task.google_event_id == None) | (Task.google_event_id == ""),
             )
             .order_by(Task.id.asc())
             .all()
@@ -277,4 +277,4 @@ class TaskRepo:
     def mark_synced(self, task_id: int, uid: str) -> None:
         task = self._s.get(Task, task_id)
         if task is not None:
-            task.radicale_uid = uid
+            task.google_event_id = uid

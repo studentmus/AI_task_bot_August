@@ -4,7 +4,8 @@
       "Bash(python *)",
       "Bash(python3 *)",
       "Read(///wsl.localhost/Ubuntu/home/**)",
-      "Bash(wsl *)"
+      "Bash(wsl *)",
+      "Bash(conda run *)"
     ]
   }
 }

@@ -15,11 +15,6 @@ class Settings(BaseSettings):
     db_path: str = "data/tasks.db"
     task_timezone: str = "Europe/Copenhagen"
     
-    # === НОВЫЕ ПЕРЕМЕННЫЕ ДОЛЖНЫ БЫТЬ ЗДЕСЬ ===
-    radicale_url: str = "http://127.0.0.1:5232/ivan/2D327C64-9361-4EF5-97E6-80E948B58D8D/"
-    radicale_user: str = "ivan"
-    radicale_pass: str = "shh123"
-
     obsidian_vault_path: str = "/home/adminlinux/MyBrain"
 
     log_level: str = "INFO"

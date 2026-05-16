@@ -9,21 +9,36 @@ from app.storage.task_repo import TaskRepo
 
 commands_router = Router(name="commands")
 
+_HELP_TEXT = (
+    "Привет! Я AI Task Bot.\n\n"
+    "── Логирование (кнопки или команды) ──\n"
+    "Нажми кнопку сферы → пиши записи → нажми другую или /stop\n\n"
+    "  /sleep [текст]   — сон (23:30–7:00, с полуночи до 8…)\n"
+    "  /meal  [текст]   — питание\n"
+    "  /workout [текст] — тренировка\n"
+    "  /german [текст]  — немецкий (/de)\n"
+    "  /ideas [текст]   — идеи\n"
+    "  /ctx   [текст]   — личный контекст\n"
+    "  /stop            — выйти из режима\n"
+    "  /undo [сфера]   — отменить последнюю запись\n\n"
+    "── Задачи (свободный текст или команды) ──\n"
+    "Просто напиши: «завтра в 15:00 встреча» или «удали задачу X»\n\n"
+    "  /pending — последние задачи\n"
+    "  /cleanup — очистить мусорные задачи\n"
+    "  /cancel  — отменить текущий ввод\n\n"
+    "── Примеры ──\n"
+    "• /sleep 23:30–7:00, хорошо выспался\n"
+    "• /sleep с одиннадцати до семи\n"
+    "• /meal каша 300г + 2 яйца\n"
+    "• в пятницу в 15:00 встреча с Ваней\n"
+    "• перенеси встречу на понедельник"
+)
+
 
 @commands_router.message(Command("start"))
 async def cmd_start(message: Message) -> None:
-    await message.answer(
-        "Привет! Я AI Task Bot.\n\n"
-        "Просто напиши задачу — я разберу дату и время сам.\n\n"
-        "Примеры:\n"
-        "• завтра в зал\n"
-        "• в пятницу в 15:00 встреча\n"
-        "• 4 мая оплатить счёт\n"
-        "• через 3 дня вечером позвонить врачу\n\n"
-        "Команды:\n"
-        "/pending — последние задачи\n"
-        "/cancel  — отменить текущий ввод"
-    )
+    from app.bot.handlers.log_handler import LOG_KEYBOARD
+    await message.answer(_HELP_TEXT, reply_markup=LOG_KEYBOARD)
 
 
 @commands_router.message(Command("pending"))

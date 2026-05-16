@@ -1,6 +1,8 @@
 import logging
-from datetime import date, timedelta
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -75,13 +77,22 @@ def _build_event_body(task) -> dict:
             if "-" in task.event_time:
                 start_str, end_str = task.event_time.split("-", 1)
                 start_dt = f"{t_date.isoformat()}T{start_str.strip()}:00"
-                end_dt = f"{t_date.isoformat()}T{end_str.strip()}:00"
+                # Если конец <= начала — событие пересекает полночь → следующий день
+                s_h, s_m = map(int, start_str.strip().split(":"))
+                e_h, e_m = map(int, end_str.strip().split(":"))
+                if (e_h, e_m) <= (s_h, s_m):
+                    end_dt = f"{(t_date + timedelta(days=1)).isoformat()}T{end_str.strip()}:00"
+                else:
+                    end_dt = f"{t_date.isoformat()}T{end_str.strip()}:00"
             else:
                 h, m = map(int, task.event_time.split(":"))
-                end_h, end_m = divmod(h * 60 + m + 60, 60 * 24)  # +1 час, не выходя за сутки
-                end_h = (h + 1) % 24
-                start_dt = f"{t_date.isoformat()}T{h:02d}:{m:02d}:00"
-                end_dt = f"{t_date.isoformat()}T{end_h:02d}:{m:02d}:00"
+                if h == 23:
+                    # 23:xx + 1ч пересекает полночь → конец на следующий день
+                    start_dt = f"{t_date.isoformat()}T{h:02d}:{m:02d}:00"
+                    end_dt = f"{(t_date + timedelta(days=1)).isoformat()}T00:{m:02d}:00"
+                else:
+                    start_dt = f"{t_date.isoformat()}T{h:02d}:{m:02d}:00"
+                    end_dt = f"{t_date.isoformat()}T{h + 1:02d}:{m:02d}:00"
         except (ValueError, AttributeError):
             # Fallback: весь день
             body["start"] = {"date": t_date.isoformat()}
@@ -205,6 +216,112 @@ def rename_event(google_event_id: str, new_title: str) -> bool:
     except Exception as exc:
         logger.error("rename_event failed for event_id=%s: %s", google_event_id, exc)
         return False
+
+
+@dataclass
+class CalendarEvent:
+    summary: str
+    start_time: str        # "HH:MM" or "весь день"
+    end_time: str | None   # "HH:MM" or None
+    all_day: bool
+    is_bot_task: bool      # created by this bot → already shown as task
+    duration_min: int | None = None
+
+
+def get_upcoming_events(date_str: str, days: int = 1) -> list[CalendarEvent]:
+    """Read events from Google Calendar for the given date range.
+
+    Skips cancelled events. Marks bot-created events so morning_plan
+    can avoid showing them twice.
+    """
+    from app.config import settings as _s
+    tz = ZoneInfo(_s.task_timezone)
+
+    try:
+        d_start = date.fromisoformat(date_str)
+    except ValueError:
+        d_start = date.today()
+    d_end = d_start + timedelta(days=days)
+
+    time_min = datetime(d_start.year, d_start.month, d_start.day,
+                        tzinfo=tz).isoformat()
+    time_max = datetime(d_end.year, d_end.month, d_end.day,
+                        tzinfo=tz).isoformat()
+
+    try:
+        service = _get_service()
+        result = service.events().list(
+            calendarId="primary",
+            timeMin=time_min,
+            timeMax=time_max,
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=25,
+        ).execute()
+    except Exception as exc:
+        logger.error("get_upcoming_events failed: %s", exc)
+        return []
+
+    events: list[CalendarEvent] = []
+    for item in result.get("items", []):
+        if item.get("status") == "cancelled":
+            continue
+
+        summary = item.get("summary") or "(без названия)"
+        is_bot = bool(
+            (item.get("extendedProperties") or {})
+            .get("private", {})
+            .get("local_task_id")
+        )
+
+        start = item.get("start", {})
+        end   = item.get("end", {})
+
+        if "date" in start:
+            events.append(CalendarEvent(
+                summary=summary, start_time="весь день",
+                end_time=None, all_day=True, is_bot_task=is_bot,
+            ))
+            continue
+
+        # timed event
+        def _parse_dt(raw: str) -> datetime:
+            # strips timezone offset for comparison
+            return datetime.fromisoformat(raw)
+
+        try:
+            s_dt = _parse_dt(start["dateTime"])
+            e_dt = _parse_dt(end["dateTime"])
+            dur = int((e_dt - s_dt).total_seconds() / 60)
+            events.append(CalendarEvent(
+                summary=summary,
+                start_time=s_dt.strftime("%H:%M"),
+                end_time=e_dt.strftime("%H:%M"),
+                all_day=False,
+                is_bot_task=is_bot,
+                duration_min=dur,
+            ))
+        except (KeyError, ValueError) as exc:
+            logger.warning("Could not parse event times: %s — %s", summary, exc)
+
+    return events
+
+
+def format_events_for_llm(events: list[CalendarEvent], date_str: str) -> str:
+    """Return a human-readable block for LLM tool response."""
+    if not events:
+        return f"В календаре нет событий на {date_str}."
+    lines = [f"Календарь на {date_str}:"]
+    for e in events:
+        time_part = e.start_time
+        if not e.all_day and e.end_time:
+            time_part += f"–{e.end_time}"
+            if e.duration_min:
+                h, m = divmod(e.duration_min, 60)
+                time_part += f" ({h}ч {m}м)" if m else f" ({h}ч)"
+        bot_tag = " [задача бота]" if e.is_bot_task else ""
+        lines.append(f"  {time_part}  {e.summary}{bot_tag}")
+    return "\n".join(lines)
 
 
 def mark_event_done(local_task_id: int, google_event_id: str | None = None) -> bool:

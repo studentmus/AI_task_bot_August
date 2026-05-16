@@ -162,16 +162,20 @@ def build_system_prompt() -> str:
         "- При вызове move_task: ОБЯЗАТЕЛЬНО используй task_id если он виден в списке задач\n"
         "  или был упомянут в истории диалога. Поиск по task_text — крайний случай,\n"
         "  когда ID неизвестен. Передача task_id надёжнее и быстрее.\n"
-        "- УТОЧНЕНИЕ/ИЗМЕНЕНИЕ задачи через местоимения: слова 'ей', 'этой', 'её', 'тут',\n"
-        "  'этой задаче' — ссылка на ПОСЛЕДНЮЮ УПОМЯНУТУЮ задачу в диалоге.\n"
-        "  НАЙДИ её task_id в разделе 'Задачи пользователя' выше и вызови move_task.\n"
-        "  Создание нового task через create_task вместо редактирования — КРИТИЧЕСКАЯ ОШИБКА.\n"
+        "- ОПРЕДЕЛЕНИЕ ЦЕЛЕВОЙ ЗАДАЧИ при редактировании (переименовать/перенести/удалить):\n"
+        "  Приоритет при выборе задачи (по убыванию):\n"
+        "  1. Пользователь назвал task_id явно → используй его.\n"
+        "  2. Пользователь назвал точное название задачи → используй task_text для поиска.\n"
+        "  3. Пользователь использовал местоимение ('её', 'ей', 'эту', 'её') → это ПОСЛЕДНЯЯ\n"
+        "     СОЗДАННАЯ задача в текущем сеансе (задача с наибольшим id из раздела\n"
+        "     'Задачи пользователя' выше, упомянутая в последних сообщениях диалога).\n"
+        "  4. Нет ни ID, ни названия, ни местоимения → УТОЧНИ у пользователя какую задачу.\n"
+        "  КРИТИЧЕСКАЯ ОШИБКА: брать случайную задачу из истории вместо недавно созданной.\n"
         "  Примеры:\n"
         "    'поставь ей время 15:00'           → move_task(task_id=N, new_time='15:00')\n"
         "    'и поставь ей время с 15 до 18'    → move_task(task_id=N, new_time='15:00-18:00')\n"
         "    'перенеси её на завтра'             → move_task(task_id=N, new_date='YYYY-MM-DD')\n"
-        "  ИСКЛЮЧЕНИЕ: если 'её'/'ей' явно часть нового дела ('напомни ей позвонить') и\n"
-        "  при этом нет ни одной подходящей задачи в списке — тогда create_task допустим.\n"
+        "    'переименуй' без уточнения         → уточни: «Какую задачу переименовать?»\n"
         "  НЕ вызывай delete_task или snooze_task для запросов на уточнение времени/даты.\n"
         "- БАТЧ: если пользователь просит удалить/выполнить несколько задач ('удали обе',\n"
         "  'выполни задачи 3 и 5', 'удали всё') — передай task_ids=[id1, id2, ...] одним вызовом.\n"
@@ -207,6 +211,25 @@ def build_day_summary(session: "Session", user_id: int) -> str:
     return "\n".join(lines)
 
 
+def build_obsidian_memory(max_facts: int = 15) -> str:
+    """Читает bot_memory.md и возвращает последние N фактов для инъекции в промпт.
+
+    Файл читается синхронно из кэша (TTL 5 мин) — не блокирует event loop.
+    Возвращает пустую строку если файл пуст или не существует.
+    """
+    from app.llm.obsidian_tools import read_memory_sync
+    content = read_memory_sync()
+    if not content:
+        return ""
+    # Берём только строки с фактами (начинаются с "- ["), пропускаем заголовки
+    facts = [ln.strip() for ln in content.splitlines()
+             if ln.strip().startswith("- [")]
+    if not facts:
+        return ""
+    recent = facts[-max_facts:]
+    return "Долгосрочная память о пользователе:\n" + "\n".join(recent)
+
+
 def build_memory_context(session: "Session", user_id: int) -> str:
     """Возвращает подтверждённые воспоминания для вставки в system prompt."""
     from app.domain.memory_service import MemoryService
@@ -225,12 +248,52 @@ def build_done_history(session: "Session", user_id: int) -> str:
     return "\n".join(lines)
 
 
+def build_energy_context(session: "Session", user_id: int) -> str:
+    """Inject current energy/state into prompt so LLM adapts tone and suggestions."""
+    try:
+        from app.domain.state import get_current_state
+        state = get_current_state(session, user_id)
+    except Exception:
+        return ""
+
+    if state.energy_source == "unknown":
+        return ""
+
+    lines = ["Текущее состояние пользователя:"]
+    src_label = {"explicit": "пинг/сообщение", "inferred": "инференс по сну"}.get(
+        state.energy_source, state.energy_source
+    )
+    energy_str = f"{state.energy}/10 — {state.energy_label} ({src_label})"
+    # notes already encoded in src_label for 'inferred'; only add for explicit
+    if state.notes and state.energy_source == "explicit":
+        energy_str += f", {state.notes}"
+    lines.append(f"  Энергия: {energy_str}")
+
+    if state.sleep_min:
+        h, m = divmod(state.sleep_min, 60)
+        lines.append(f"  Сон прошлой ночью: {h}ч {m}м")
+
+    lines.append(
+        "Адаптируй тон и рекомендации: при энергии ≤4 — мягко, без давления, "
+        "предлагай восстановление; при ≥8 — можно предложить что-то demanding."
+    )
+    return "\n".join(lines)
+
+
 def build_messages(session: "Session", user_id: int, user_text: str) -> list[dict]:
     parts = [build_system_prompt()]
+
+    obsidian_memory = build_obsidian_memory()
+    if obsidian_memory:
+        parts.append(obsidian_memory)
 
     memory_ctx = build_memory_context(session, user_id)
     if memory_ctx:
         parts.append(memory_ctx)
+
+    energy_ctx = build_energy_context(session, user_id)
+    if energy_ctx:
+        parts.append(energy_ctx)
 
     day_summary = build_day_summary(session, user_id)
     if day_summary:

@@ -26,8 +26,9 @@ tasks_router = Router(name="tasks")
 
 
 class EditStates(StatesGroup):
-    date = State()
-    time = State()
+    date  = State()
+    time  = State()
+    title = State()
 
 
 class _TaskLike(Protocol):
@@ -52,27 +53,22 @@ def _format_date(date_str: str) -> str:
 
 def _build_card(task: _TaskLike, parser: str | None = None) -> str:
     time_line = "весь день" if task.all_day or not task.event_time else task.event_time
-    lines = [
-        "📝 Задача",
-        f"Название: {task.text}",
-        f"Дата: {_format_date(task.suggested_date)}",
-        f"Время: {time_line}",
-    ]
-    if parser:
-        lines.append(f"Парсер: {parser}")
-    lines += ["", "Добавить в календарь?"]
-    return "\n".join(lines)
+    return "\n".join([
+        f"📝 <b>{task.text}</b>",
+        f"📅 {_format_date(task.suggested_date)}",
+        f"🕐 {time_line}",
+    ])
 
 
 def _build_keyboard(task_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirm_{task_id}"),
-            InlineKeyboardButton(text="✏️ Изменить дату", callback_data=f"editdate_{task_id}"),
+            InlineKeyboardButton(text="✏️ Дата",     callback_data=f"editdate_{task_id}"),
+            InlineKeyboardButton(text="🕐 Время",    callback_data=f"edittime_{task_id}"),
         ],
         [
-            InlineKeyboardButton(text="🕐 Изменить время", callback_data=f"edittime_{task_id}"),
-            InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel_{task_id}"),
+            InlineKeyboardButton(text="📝 Название", callback_data=f"edittitle_{task_id}"),
+            InlineKeyboardButton(text="🗑 Удалить",  callback_data=f"cancel_{task_id}"),
         ],
     ])
 
@@ -83,6 +79,7 @@ def _build_keyboard(task_id: int) -> InlineKeyboardMarkup:
 
 @tasks_router.callback_query(F.data.startswith("confirm_"))
 async def cb_confirm(callback: CallbackQuery) -> None:
+    """Обработчик старых сообщений с кнопкой ✅ — новые задачи подтверждаются автоматически."""
     await callback.answer()
     if callback.message is None:
         return
@@ -91,21 +88,16 @@ async def cb_confirm(callback: CallbackQuery) -> None:
     with SessionLocal() as session:
         svc = TaskService(session)
         try:
-            uid = svc.confirm_and_sync(task_id)
+            svc.confirm_and_sync(task_id)
         except ValueError:
             await callback.message.edit_text("⚠️ Задача не найдена.")
             return
+        task = TaskRepo(session).get(task_id)
 
-        repo = TaskRepo(session)
-        task = repo.get(task_id)
-
-    card = _build_card(task).replace("\nДобавить в календарь?", "")
-    if task and task.radicale_uid:
-        text = f"✅ Добавлено в Google Calendar.\n\n{card}"
-    else:
-        text = f"✅ Подтверждено. Синхронизация с Google Calendar не удалась.\n\n{card}"
-
-    await callback.message.edit_text(text)
+    await callback.message.edit_text(
+        _build_card(task),
+        reply_markup=_build_keyboard(task_id),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -232,10 +224,10 @@ async def fsm_edit_date_receive(message: Message, state: FSMContext) -> None:
         session.commit()
         task = repo.get(task_id)
 
-        if task and task.radicale_uid:
+        if task and task.google_event_id:
             try:
                 from app.domain.google_calendar import update_event
-                update_event(task.radicale_uid, task)
+                update_event(task.google_event_id, task)
             except Exception:
                 logger.exception("Google Calendar update failed for task id=%s", task_id)
 
@@ -297,10 +289,10 @@ async def fsm_edit_time_receive(message: Message, state: FSMContext) -> None:
         session.commit()
         task = repo.get(task_id)
 
-        if task and task.radicale_uid:
+        if task and task.google_event_id:
             try:
                 from app.domain.google_calendar import update_event
-                update_event(task.radicale_uid, task)
+                update_event(task.google_event_id, task)
             except Exception:
                 logger.exception("Google Calendar update failed for task id=%s", task_id)
 
@@ -312,5 +304,51 @@ async def fsm_edit_time_receive(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         "✅ Время обновлено.\n\n" + _build_card(task),
+        reply_markup=_build_keyboard(task_id),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Callback + FSM: изменить название
+# ---------------------------------------------------------------------------
+
+@tasks_router.callback_query(F.data.startswith("edittitle_"))
+async def cb_edit_title_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    if callback.message is None:
+        return
+    task_id = int(callback.data.split("_", 1)[1])
+    await state.set_state(EditStates.title)
+    await state.update_data(edit_task_id=task_id)
+    with SessionLocal() as session:
+        task = TaskRepo(session).get(task_id)
+    current = f" (сейчас: «{task.text}»)" if task else ""
+    await callback.message.edit_text(f"📝 Введи новое название{current}:")
+
+
+@tasks_router.message(EditStates.title, F.text)
+async def fsm_edit_title_receive(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    task_id: int = data["edit_task_id"]
+    new_title = message.text.strip()
+
+    if not new_title:
+        await message.answer("⚠️ Название не может быть пустым.")
+        return
+
+    with SessionLocal() as session:
+        from app.domain.task_actions import TaskActions
+        actions = TaskActions(session)
+        try:
+            result = actions.edit_task_title(task_id, new_title)
+        except ValueError as e:
+            await message.answer(f"⚠️ {e}")
+            await state.clear()
+            return
+        task = TaskRepo(session).get(task_id)
+
+    await state.clear()
+    await message.answer(
+        result + "\n\n" + _build_card(task),
         reply_markup=_build_keyboard(task_id),
     )

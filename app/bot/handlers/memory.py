@@ -1,6 +1,7 @@
 import logging
+import re
 
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
@@ -12,17 +13,29 @@ logger = logging.getLogger(__name__)
 
 memory_router = Router(name="memory")
 
+# Words that mean "skip this ping for now"
+_PING_SKIP_RE = re.compile(
+    r"^(?:не\s+сейчас|потом|позже|пропусти(?:те)?|пропустить|skip|не\s+надо|отмена|cancel)\s*$",
+    re.IGNORECASE,
+)
 
-@memory_router.message(StateFilter(PingState.waiting_response))
+
+@memory_router.message(StateFilter(PingState.waiting_response), ~F.text.startswith("/"))
 async def handle_ping_response(message: Message, state: FSMContext) -> None:
-    """Intercept any text while the bot is waiting for a scheduled-ping reply.
+    """Intercept text while the bot is waiting for a scheduled-ping reply.
 
-    Registered before main_router in dp, so this fires with highest priority
-    even before NLP guards and the task parser.
+    Excludes slash commands so /stop, /sleep etc. fall through to their handlers
+    in log_router even while in PingState.
     """
     text = (message.text or "").strip()
     if not text:
         await message.answer("Пришли текстовый ответ — запишу.")
+        return
+
+    # User wants to skip the ping
+    if _PING_SKIP_RE.match(text):
+        await state.clear()
+        await message.answer("Хорошо, пропустил.")
         return
 
     data = await state.get_data()

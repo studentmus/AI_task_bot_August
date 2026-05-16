@@ -38,7 +38,7 @@ class TaskActions:
         if task.status == "done":
             raise ValueError(f"Задача «{task.text}» уже выполнена.")
         name = task.text
-        google_event_id = task.radicale_uid or None  # читаем ДО изменения статуса
+        google_event_id = task.google_event_id or None  # читаем ДО изменения статуса
         self._repo.complete_task(task_id)
         self._session.commit()
         try:
@@ -52,7 +52,7 @@ class TaskActions:
     def delete_task(self, task_id: int) -> str:
         task = self._get_or_raise(task_id)
         name = task.text
-        google_event_id = task.radicale_uid or None  # читаем ДО изменения статуса
+        google_event_id = task.google_event_id or None  # читаем ДО изменения статуса
         task.status = "cancelled"
         self._session.commit()
         try:
@@ -76,7 +76,7 @@ class TaskActions:
     ) -> str:
         task = self._get_or_raise(task_id)
         name = task.text
-        google_event_id = task.radicale_uid or None
+        google_event_id = task.google_event_id or None
         self._repo.move_task(task_id, new_date, new_time, all_day)
         self._session.commit()
         time_part = f" в {new_time}" if new_time else ""
@@ -98,7 +98,7 @@ class TaskActions:
     ) -> str:
         task = self._get_or_raise(task_id)
         name = task.text
-        google_event_id = task.radicale_uid or None
+        google_event_id = task.google_event_id or None
         self._repo.snooze_task(task_id, until_date, until_time)
         self._session.commit()
         time_part = f" в {until_time}" if until_time else ""
@@ -131,7 +131,7 @@ class TaskActions:
     def edit_task_title(self, task_id: int, new_title: str) -> str:
         task = self._get_or_raise(task_id)
         old_name = task.text
-        google_event_id = task.radicale_uid or None
+        google_event_id = task.google_event_id or None
         self._repo.update_text(task_id, new_title)
         self._session.commit()
         logger.info("Task renamed id=%s: %r → %r", task_id, old_name, new_title)

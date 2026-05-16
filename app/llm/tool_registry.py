@@ -229,14 +229,51 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "get_today_plan",
+            "name": "get_calendar_events",
             "description": (
-                "Получить список задач на сегодня. Используй когда пользователь спрашивает "
-                "о плане дня, что запланировано, что нужно сделать сегодня."
+                "Прочитать события из Google Calendar на указанную дату или период. "
+                "Используй когда пользователь спрашивает о встречах, событиях, расписании: "
+                "'что у меня сегодня в календаре', 'есть ли встречи завтра', "
+                "'когда следующая встреча', 'свободен ли я в пятницу'. "
+                "Возвращает все события включая созданные ботом."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "date": {
+                        "type": ["string", "null"],
+                        "description": "Дата в формате YYYY-MM-DD. null или отсутствует — сегодня.",
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": "Количество дней начиная с date (1-7). По умолчанию 1.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_today_plan",
+            "description": (
+                "Получить список задач на конкретную дату. Используй когда пользователь "
+                "спрашивает о плане дня: 'что сегодня', 'план на завтра', 'задачи на пятницу'. "
+                "Если дата не указана — возвращает задачи на сегодня."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Дата в формате YYYY-MM-DD. "
+                            "Если не указана или null — возвращает задачи на сегодня."
+                        ),
+                    },
+                },
                 "required": [],
                 "additionalProperties": False,
             },
@@ -331,6 +368,67 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "analyze_logs",
+            "description": (
+                "Статистический анализ дневника по сфере: среднее, лучшее/худшее, streak, частота. "
+                "Используй когда пользователь спрашивает о ТРЕНДАХ или СТАТИСТИКЕ: "
+                "'сколько я в среднем сплю', 'как часто я тренируюсь', 'средний сон за месяц', "
+                "'сколько раз был в зале', 'какой у меня streak'. "
+                "Сервер считает агрегаты сам — не нужно делать это в тексте ответа. "
+                "Sphere обязателен — нельзя анализировать все сферы сразу."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sphere": {
+                        "type": "string",
+                        "description": (
+                            "Сфера: sleep, nutrition, training, german, health, ideas, ivan_context."
+                        ),
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": "Глубина выборки в днях. По умолчанию 14.",
+                    },
+                },
+                "required": ["sphere"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_logs",
+            "description": (
+                "Вернуть СЫРЫЕ записи из дневника за период. "
+                "Используй когда нужны конкретные записи: 'что я ел вчера', "
+                "'покажи тренировки за неделю', 'что я записывал про сон'. "
+                "Для статистики (среднее, streak, частота) — используй analyze_logs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sphere": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Сфера: sleep, nutrition, training, german, health, ideas, ivan_context. "
+                            "null — все сферы."
+                        ),
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": "Глубина выборки в днях. По умолчанию 7.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read_bot_log",
             "description": (
                 "Прочитать последние записи из лог-файла в папке _bot/ Obsidian Vault. "
@@ -351,6 +449,35 @@ TOOLS: list[dict] = [
                     },
                 },
                 "required": ["filename"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "log_energy",
+            "description": (
+                "Записать текущий уровень энергии/состояния пользователя (1-10). "
+                "Используй когда пользователь говорит о своём состоянии: "
+                "'я уставший', 'чувствую себя отлично', 'устал от встреч', 'энергия на нуле', "
+                "'в ударе сегодня', 'разбитый', 'бодрый'. "
+                "Переводи описание в число: уставший → 2-3, средне → 5-6, отлично → 8-9. "
+                "НЕ используй для физических симптомов болезни — это в append_obsidian_log(sphere='health')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "level": {
+                        "type": "integer",
+                        "description": "Уровень энергии от 1 (совсем нет сил) до 10 (максимальная).",
+                    },
+                    "notes": {
+                        "type": ["string", "null"],
+                        "description": "Краткая заметка о состоянии. Например: 'устал от встреч', 'хорошо поработал'.",
+                    },
+                },
+                "required": ["level"],
                 "additionalProperties": False,
             },
         },

@@ -150,15 +150,94 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
     if name == "set_category":
         return actions.set_category(_resolve_task_id(args, session, user_id), args["category"])
 
+    if name == "get_calendar_events":
+        import asyncio
+        from app.domain.google_calendar import get_upcoming_events, format_events_for_llm
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        date_arg = (args.get("date") or "").strip() or None
+        days = max(1, min(7, int(args.get("days") or 1)))
+        if not date_arg:
+            tz = ZoneInfo(__import__("app.config", fromlist=["settings"]).settings.task_timezone)
+            date_arg = datetime.now(tz=tz).strftime("%Y-%m-%d")
+        try:
+            events = await asyncio.to_thread(get_upcoming_events, date_arg, days)
+            return format_events_for_llm(events, date_arg)
+        except Exception as exc:
+            return f"Не удалось прочитать Google Calendar: {exc}"
+
     if name == "get_today_plan":
-        tasks = actions.get_today_plan(user_id)
-        if not tasks:
-            return "На сегодня задач нет."
-        lines = []
+        import asyncio
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from app.config import settings as _cfg
+
+        date_arg = args.get("date") or None
+        tz = ZoneInfo(_cfg.task_timezone)
+        gcal_date = date_arg or datetime.now(tz=tz).strftime("%Y-%m-%d")
+        label = date_arg or "сегодня"
+
+        tasks = actions.get_today_plan(user_id, today=date_arg)
+
+        # task lines (include id for LLM reference)
+        lines: list[tuple[str, str]] = []  # (sort_key, text)
         for t in tasks:
-            time_part = t.event_time if (not t.all_day and t.event_time) else "весь день"
-            lines.append(f"id={t.id} | {time_part} | [{t.status}] {t.text}")
+            tp = t.event_time if (not t.all_day and t.event_time) else "весь день"
+            key = t.event_time.split("-")[0].strip() if (not t.all_day and t.event_time) else "99:99"
+            lines.append((key, f"[задача id={t.id}] {tp} | [{t.status}] {t.text}"))
+
+        # GCal events (non-bot only)
+        try:
+            from app.domain.google_calendar import get_upcoming_events
+            cal_events = await asyncio.to_thread(get_upcoming_events, gcal_date, 1)
+            for e in cal_events:
+                if e.is_bot_task:
+                    continue
+                if e.all_day:
+                    tp, key = "весь день", "99:99"
+                else:
+                    tp = e.start_time + (f"–{e.end_time}" if e.end_time else "")
+                    key = e.start_time
+                lines.append((key, f"[GCal] {tp} | {e.summary}"))
+        except Exception as exc:
+            logger.warning("get_today_plan: GCal failed: %s", exc)
+
+        if not lines:
+            return f"На {label} ничего нет."
+
+        lines.sort(key=lambda x: x[0])
+        return f"На {label}:\n" + "\n".join(t for _, t in lines)
+
+    if name == "analyze_logs":
+        from app.domain.log_analytics import analyze_sphere
+        from app.storage.log_repo import LogRepo
+        sphere = args["sphere"].strip().lower()
+        days = int(args.get("days") or 14)
+        entries = LogRepo(session).get_recent(user_id, sphere=sphere, days=days, limit=200)
+        return analyze_sphere(entries, sphere, days)
+
+    if name == "query_logs":
+        from app.storage.log_repo import LogRepo
+        sphere = args.get("sphere") or None
+        days = int(args.get("days") or 7)
+        entries = LogRepo(session).get_recent(user_id, sphere=sphere, days=days, limit=50)
+        if not entries:
+            label = f"«{sphere}»" if sphere else "всех сфер"
+            return f"Нет записей за последние {days} дн. в {label}."
+        lines = [f"Записи за {days} дн. ({sphere or 'все сферы'}):"]
+        for e in reversed(entries):
+            lines.append(f"[{e.logged_at}] {e.sphere}: {e.raw_text}")
         return "\n".join(lines)
+
+    if name == "log_energy":
+        from app.llm.obsidian_tools import append_to_bot_log
+        level = int(args["level"])
+        notes = (args.get("notes") or "").strip()
+        level = max(1, min(10, level))
+        entry = f"Энергия: {level}/10" + (f" — {notes}" if notes else "")
+        await append_to_bot_log("energy.md", entry)
+        label = "высокая" if level >= 7 else ("средняя" if level >= 5 else "низкая")
+        return f"Состояние записано: {level}/10 ({label})."
 
     if name == "read_bot_log":
         from app.llm.obsidian_tools import read_bot_log

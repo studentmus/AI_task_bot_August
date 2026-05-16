@@ -200,12 +200,12 @@ def next_weekday(base: date, target_weekday: int) -> date:
 def has_time_signal(text: str) -> bool:
     lower = text.lower()
     explicit_patterns = [
-        r"\b\d{1,2}[:.]\d{2}\b",
-        r"\b(?:в|к)\s*\d{1,2}\s*(?:час|часа|часов|ч)?\b",
-        r"\b\d{1,2}\s*(?:час|часа|часов)\b",
-        r"\b\d{1,2}\s*(?:am|pm)\b",
-        # диапазон "с X до Y" — на естественном языке без двоеточий
-        r"\bс\s+\d{1,2}(?:[:.]\d{2})?\s+до\s+\d{1,2}",
+        r"\b\d{1,2}[:.]\d{2}\b",                            # 15:00  15.00
+        r"\b(?:в|к|на)\s+\d{1,2}\b",                        # в 15  на 15  к 3
+        r"\b(?:в|к)\s*\d{1,2}\s*(?:час|часа|часов|ч)\b",    # в 3 часа
+        r"\b\d{1,2}\s*(?:час|часа|часов)\b",                 # 3 часа
+        r"\b\d{1,2}\s*(?:am|pm)\b",                          # 3pm
+        r"\bс\s+\d{1,2}(?:[:.]\d{2})?\s+до\s+\d{1,2}",     # с 10 до 12
     ]
     if any(re.search(p, lower, flags=re.IGNORECASE) for p in explicit_patterns):
         return True
@@ -304,35 +304,64 @@ def parse_rule_based(text: str, base: Optional[date] = None) -> list[ParseResult
     return []
 
 
+def _pm_heuristic(h: int, lower: str) -> int:
+    """1-6 без явного утра/ам → скорее вечер (PM)."""
+    if 1 <= h <= 6 and not any(w in lower for w in ("утра", "ноч", "am")):
+        return h + 12
+    return h
+
+
 def extract_time_heuristic(text: str) -> Optional[str]:
     lower = text.lower()
-    # Диапазон «с X до Y [суффикс]» — проверяем первым
+
+    # 1. Диапазон «с X до Y»
     range_result = _extract_time_range_natural(lower)
     if range_result:
         return range_result
+
+    # 2. Словесные времена суток
     for word, t in TIME_WORDS.items():
         if word in lower:
             return t
+
+    # 3. HH:MM или HH.MM
     m = re.search(r"\b(\d{1,2})[:.](\d{2})\b", lower)
     if m:
         return validate_time(f"{int(m.group(1)):02d}:{int(m.group(2)):02d}")
-    m = re.search(r"\b(?:в|к)?\s*([0-2]?\d)\s*(?:час|часа|часов|ч)\b", lower)
+
+    # 4. "HH MM" через пробел — "15 30" → 15:30
+    m = re.search(r"(?<!\d)(\d{1,2})\s+(\d{2})(?!\d)", lower)
     if m:
-        hour = int(m.group(1))
-        if 1 <= hour <= 6 and not any(w in lower for w in ["утра", "ноч", "am"]):
-            hour += 12
-        if 0 <= hour <= 23:
-            return f"{hour:02d}:00"
+        h, mn = int(m.group(1)), int(m.group(2))
+        if 0 <= h <= 23 and 0 <= mn <= 59:
+            return f"{h:02d}:{mn:02d}"
+
+    # 5. Предлог + голое число: "в 15", "к 3", "на 15"
+    m = re.search(r"\b(?:в|к|на)\s+([01]?\d|2[0-3])\b", lower)
+    if m:
+        h = _pm_heuristic(int(m.group(1)), lower)
+        if 0 <= h <= 23:
+            return f"{h:02d}:00"
+
+    # 6. N часов/часа/ч  (с необязательным "в/к")
+    m = re.search(r"\b(?:(?:в|к)\s*)?([01]?\d|2[0-3])\s*(?:час|часа|часов|ч)\b", lower)
+    if m:
+        h = _pm_heuristic(int(m.group(1)), lower)
+        if 0 <= h <= 23:
+            return f"{h:02d}:00"
+
     return None
 
 
 def remove_time_words(text: str) -> str:
     patterns = [
-        # Диапазон «с X до Y [суффикс]» — первым, чтобы не оставлять обрывки
+        # Диапазон «с X до Y» — первым
         r"\bс\s+\d{1,2}(?:[:.]\d{2})?\s*(?:утра|дня|вечера|ночи|am|pm)?"
         r"\s+до\s+\d{1,2}(?:[:.]\d{2})?\s*(?:утра|дня|вечера|ночи|am|pm)?\b",
-        r"\b(?:в|к)\s*\d{1,2}[:.]\d{2}\b",
-        r"\b\d{1,2}[:.]\d{2}\b",
+        r"\b(?:в|к|на)\s+\d{1,2}[:.]\d{2}\b",    # в/к/на 15:30
+        r"\b\d{1,2}[:.]\d{2}\b",                   # 15:30
+        r"\b(?:в|к|на)\s+\d{1,2}\b",               # в 15, на 3, к 9
+        r"\b\d{1,2}\s+\d{2}\b",                    # 15 30 (пробел вместо двоеточия)
         r"\b(?:в|к)?\s*\d{1,2}\s*(?:час|часа|часов|ч)\b",
         r"\bутром\b",
         r"\bс утра\b",
@@ -537,7 +566,9 @@ def parse_date_input(text: str) -> ParseResult:
 
 
 def parse_time_input(text: str) -> tuple[Optional[str], bool]:
-    lower = cleanup_text(text).lower()
+    lower = cleanup_text(text).lower().strip()
+
+    # Отмена времени
     if lower in {"без времени", "без время", "весь день", "на весь день", "all day", "none", "нет", "-"}:
         return None, True
 
@@ -546,12 +577,27 @@ def parse_time_input(text: str) -> tuple[Optional[str], bool]:
     if m:
         return f"{_validate_single_time(m.group(1))}-{_validate_single_time(m.group(2))}", False
 
-    # Диапазон на естественном языке: "с 10 до 12", "с 10 до 4 дня", "с 9 утра до 5 вечера"
+    # Диапазон на естественном языке: "с 10 до 12", "с 9 утра до 5 вечера"
     range_result = _extract_time_range_natural(lower)
     if range_result:
         start_str, end_str = range_result.split("-")
         return f"{_validate_single_time(start_str)}-{_validate_single_time(end_str)}", False
 
+    # Голое число: "15" → 15:00  "3" → 15:00 (PM heuristic)
+    m = re.fullmatch(r"(\d{1,2})", lower)
+    if m:
+        h = _pm_heuristic(int(m.group(1)), lower)
+        if 0 <= h <= 23:
+            return f"{h:02d}:00", False
+
+    # Пробел вместо двоеточия: "15 30" → 15:30  "9 00" → 09:00
+    m = re.fullmatch(r"(\d{1,2})\s+(\d{2})", lower)
+    if m:
+        h, mn = int(m.group(1)), int(m.group(2))
+        if 0 <= h <= 23 and 0 <= mn <= 59:
+            return f"{h:02d}:{mn:02d}", False
+
+    # Остальное через универсальный heuristic
     time_str = extract_time_heuristic(lower)
     if not time_str:
         raise ValueError(f"Cannot parse time from {text!r}")

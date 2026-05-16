@@ -40,7 +40,7 @@ class TaskService:
             self._session.query(Task)
             .filter(
                 Task.status == "pending",
-                Task.radicale_uid.is_(None),
+                Task.google_event_id.is_(None),
                 Task.created_at < cutoff,
             )
             .all()
@@ -64,10 +64,10 @@ class TaskService:
         if task is None:
             return None
 
-        if task.radicale_uid:
+        if task.google_event_id:
             # Уже синхронизировано ранее (например через LLM-путь)
             logger.info("Task id=%s already has google_event_id, skipping create", task_id)
-            return task.radicale_uid
+            return task.google_event_id
 
         try:
             from app.domain.google_calendar import create_event
