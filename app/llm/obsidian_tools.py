@@ -144,6 +144,28 @@ async def read_memory_from_obsidian() -> str:
         return f"Ошибка чтения файла памяти: {exc}"
 
 
+async def read_bot_log(filename: str, lines: int = 15) -> str:
+    """Читает последние N строк из _bot/{filename}.
+
+    filename — имя файла с расширением, например 'sleep.md'.
+    Используется инструментом read_bot_log для показа пользователю что записалось.
+    """
+    path = Path(settings.obsidian_vault_path) / "_bot" / filename
+    if not path.exists():
+        available = sorted(p.name for p in path.parent.glob("*.md")) if path.parent.exists() else []
+        hint = f" Доступные файлы: {', '.join(available)}." if available else ""
+        return f"Файл '{filename}' не найден в _bot/.{hint}"
+    try:
+        async with aiofiles.open(path, encoding="utf-8") as f:
+            content = await f.read()
+        all_lines = [ln for ln in content.splitlines() if ln.strip()]
+        last = all_lines[-lines:] if len(all_lines) > lines else all_lines
+        return "\n".join(last) if last else "(файл пуст)"
+    except OSError as exc:
+        logger.error("read_bot_log: %s", exc)
+        return f"Ошибка чтения '{filename}': {exc}"
+
+
 async def append_to_bot_log(filename: str, text: str) -> str:
     """Write a timestamped entry to MyBrain/_bot/{filename}.
 

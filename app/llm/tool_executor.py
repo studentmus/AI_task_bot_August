@@ -160,6 +160,10 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
             lines.append(f"id={t.id} | {time_part} | [{t.status}] {t.text}")
         return "\n".join(lines)
 
+    if name == "read_bot_log":
+        from app.llm.obsidian_tools import read_bot_log
+        return await read_bot_log(args["filename"])
+
     if name == "save_fact_to_obsidian":
         from app.llm.obsidian_tools import save_fact_to_obsidian
         return await save_fact_to_obsidian(args["fact"].strip())

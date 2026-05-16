@@ -331,6 +331,33 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "read_bot_log",
+            "description": (
+                "Прочитать последние записи из лог-файла в папке _bot/ Obsidian Vault. "
+                "Используй когда пользователь просит показать что записалось, "
+                "прочитать лог, проверить запись, посмотреть данные. "
+                "НИКОГДА не вызывай create_task вместо этого инструмента. "
+                "filename — имя файла с расширением .md (например, 'sleep.md', 'nutrition.md', 'health.md')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": (
+                            "Имя файла в _bot/ с расширением .md. "
+                            "Примеры: 'sleep.md', 'nutrition.md', 'training.md', 'health.md', 'german.md'."
+                        ),
+                    },
+                },
+                "required": ["filename"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read_memory_from_obsidian",
             "description": (
                 "Прочитать всю долгосрочную память пользователя из Obsidian. "
