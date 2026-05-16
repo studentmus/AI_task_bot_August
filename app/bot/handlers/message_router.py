@@ -107,6 +107,18 @@ _READ_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Гарда «не спится»: логирует факт + даёт лёгкую рекомендацию.
+# Проверяется ДО _NEXT_STEP_RE чтобы не уйти в обычный next-step с late-night gate.
+_CANT_SLEEP_RE = re.compile(
+    r"\bне\s+спится\b"
+    r"|\bне\s+могу\s+спать\b"
+    r"|\bбессонница\b"
+    r"|\bне\s+сплю\b"
+    r"|\bпросыпаюсь\b"
+    r"|\bпроснулся\s+и\s+не\s+сплю\b",
+    re.IGNORECASE,
+)
+
 # Гарда «следующего шага»: детектирует запросы типа "что делать", "следующий шаг".
 # Проверяется ДО _QUESTION_RE, чтобы получить специализированный ответ, а не общий чат.
 _NEXT_STEP_RE = re.compile(
@@ -332,7 +344,13 @@ async def dispatch_text(message: Message) -> None:
     user_id = message.from_user.id if message.from_user else 0
     lower = raw.lower()
 
-    # ── 0. СЛЕДУЮЩИЙ ШАГ — специализированный engine (энергия + GCal + алёрты) ──
+    # ── 0. НЕ СПИТСЯ — лог + лёгкая рекомендация (раньше next-step чтобы обойти late-night gate)
+    if _CANT_SLEEP_RE.search(lower):
+        logger.info("Can't sleep detected → log + light activity for %r", raw)
+        await _run_cant_sleep(message, user_id)
+        return
+
+    # ── 0.5. СЛЕДУЮЩИЙ ШАГ — специализированный engine (энергия + GCal + алёрты) ──
     if _NEXT_STEP_RE.search(lower):
         logger.info("Next-step request → engine for %r", raw)
         await _run_next_step(message, user_id)
@@ -472,6 +490,21 @@ async def _run_log_direct(message: Message, user_id: int, sphere: str, entry: st
 # ---------------------------------------------------------------------------
 # Next-step engine handler
 # ---------------------------------------------------------------------------
+
+async def _run_cant_sleep(message: Message, user_id: int) -> None:
+    try:
+        from aiogram.enums import ChatAction
+        await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+        from app.llm.obsidian_tools import append_to_bot_log
+        await append_to_bot_log("health.md", "Не спится")
+        with SessionLocal() as session:
+            from app.domain.next_step import suggest_light_activity
+            text = await suggest_light_activity(session, user_id)
+        await message.answer(f"📝 Записал в health.md.\n\n🎯 {text}")
+    except Exception:
+        logger.exception("cant_sleep handler failed for user=%s", user_id)
+        await message.answer("⚠️ Не смог обработать запрос.")
+
 
 async def _run_next_step(message: Message, user_id: int) -> None:
     try:

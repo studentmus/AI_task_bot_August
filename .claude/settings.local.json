@@ -5,7 +5,8 @@
       "Bash(python3 *)",
       "Read(///wsl.localhost/Ubuntu/home/**)",
       "Bash(wsl *)",
-      "Bash(conda run *)"
+      "Bash(conda run *)",
+      "Bash(git remote *)"
     ]
   }
 }

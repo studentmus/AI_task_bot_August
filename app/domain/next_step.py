@@ -18,6 +18,28 @@ logger = logging.getLogger(__name__)
 _WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг",
                 "пятница", "суббота", "воскресенье"]
 
+# After this time (23:40) the only right step is sleep.
+_SLEEP_HOUR = 23
+_SLEEP_MINUTE = 40
+
+_SLEEP_MESSAGE = (
+    "Уже после 23:40 — лучший следующий шаг это лечь спать. "
+    "Хороший сон важнее любой задачи. Если не спится — скажи об этом."
+)
+
+_CANT_SLEEP_PROMPT = """\
+Пользователь не может заснуть. Сейчас ночь. Предложи ОДНО лёгкое занятие \
+которое поможет расслабиться или использовать время без стресса. \
+Не работу, не тренировку — только лёгкое: подкаст на немецком/румынском, \
+дыхательное упражнение, лёгкое чтение, медитация, растяжка. \
+Конкретно и коротко — 2 предложения.\
+"""
+
+
+def _is_late_night(now: datetime) -> bool:
+    h, m = now.hour, now.minute
+    return (h == _SLEEP_HOUR and m >= _SLEEP_MINUTE) or (0 <= h < 5)
+
 _SYSTEM_PROMPT = """\
 Ты личный AI-коуч. Твоя задача — дать ОДИН конкретный следующий шаг.
 
@@ -152,12 +174,17 @@ def _call_llm(user_prompt: str) -> str | None:
 
 async def suggest_next_step(session: Session, user_id: int) -> str:
     """Return ONE concrete next-step suggestion as a string."""
+    tz = ZoneInfo(settings.task_timezone)
+    now = datetime.now(tz=tz)
+
+    if _is_late_night(now):
+        return _SLEEP_MESSAGE
+
     ctx = await _gather_context(session, user_id)
     prompt = _build_context_prompt(ctx)
     text = await asyncio.to_thread(_call_llm, prompt)
 
     if not text:
-        # Deterministic fallback
         if ctx["alerts"]:
             return f"⚠️ Обрати внимание: {ctx['alerts'][0]}"
         if ctx["tasks"]:
@@ -165,3 +192,16 @@ async def suggest_next_step(session: Session, user_id: int) -> str:
         return "Похоже, сейчас нет срочных дел. Хорошее время для языков или отдыха."
 
     return text
+
+
+async def suggest_light_activity(session: Session, user_id: int) -> str:
+    """Light recommendation for when user can't sleep — ignores late-night gate."""
+    from app.domain.state import get_current_state
+    state = get_current_state(session, user_id)
+
+    prompt = _CANT_SLEEP_PROMPT
+    if state.energy:
+        prompt += f" Текущая энергия пользователя: {state.energy}/10."
+
+    text = await asyncio.to_thread(_call_llm, prompt)
+    return text or "Попробуй послушать немецкий подкаст или сделай 5 минут дыхательного упражнения — без экрана если возможно."
