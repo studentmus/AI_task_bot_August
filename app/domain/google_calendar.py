@@ -191,6 +191,22 @@ def delete_event(local_task_id: int, google_event_id: str | None = None) -> bool
         return False
 
 
+def rename_event(google_event_id: str, new_title: str) -> bool:
+    """Переименовывает событие: JSON Merge Patch только поля summary."""
+    try:
+        service = _get_service()
+        service.events().patch(
+            calendarId="primary",
+            eventId=google_event_id,
+            body={"summary": new_title},
+        ).execute()
+        logger.info("Event renamed: event_id=%s new_title=%r", google_event_id, new_title)
+        return True
+    except Exception as exc:
+        logger.error("rename_event failed for event_id=%s: %s", google_event_id, exc)
+        return False
+
+
 def mark_event_done(local_task_id: int, google_event_id: str | None = None) -> bool:
     """Добавляет '✅ ' к названию события и красит его в серый (colorId='8').
     Приоритет: прямой google_event_id → поиск по extendedProperties."""

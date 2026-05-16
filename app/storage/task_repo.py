@@ -193,6 +193,13 @@ class TaskRepo:
     # Обновление даты / времени
     # ------------------------------------------------------------------
 
+    def update_text(self, task_id: int, new_text: str) -> bool:
+        task = self._s.get(Task, task_id)
+        if task is None:
+            return False
+        task.text = new_text
+        return True
+
     def update_date(self, task_id: int, date_str: str) -> bool:
         task = self._s.get(Task, task_id)
         if task is None:

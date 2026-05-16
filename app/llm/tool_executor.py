@@ -84,9 +84,14 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
             all_day=time_val is None,
             user_id=user_id,
         )
+        # Задача создана через LLM = пользователь уже подтвердил намерение.
+        # Сразу переводим в confirmed, чтобы она не была уязвима для /cleanup
+        # и гарантированно отображалась в утреннем плане и get_upcoming_tasks.
+        repo.confirm(task_id)
         session.commit()
-        logger.info("Tool create_task → id=%s", task_id)
+        logger.info("Tool create_task → id=%s (confirmed)", task_id)
 
+        synced = False
         task = repo.get(task_id)
         if task is not None:
             try:
@@ -95,10 +100,12 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
                 if event_id:
                     repo.mark_synced(task_id, event_id)
                     session.commit()
+                    synced = True
             except Exception:
                 logger.exception("Google Calendar sync failed for task id=%s", task_id)
 
-        return f"Задача создана, id={task_id}: «{args['text']}» на {args['date']}"
+        cal_note = "" if synced else " (в календарь не добавлена, но сохранена в базе)"
+        return f"Задача создана, id={task_id}: «{args['text']}» на {args['date']}{cal_note}"
 
     if name == "complete_task":
         ids = _resolve_task_ids(args, session, user_id)
@@ -132,6 +139,12 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
             task_id=_resolve_task_id(args, session, user_id),
             until_date=args["until_date"],
             until_time=args.get("until_time") or None,
+        )
+
+    if name == "edit_task_title":
+        return actions.edit_task_title(
+            task_id=_resolve_task_id(args, session, user_id),
+            new_title=args["new_title"].strip(),
         )
 
     if name == "set_category":

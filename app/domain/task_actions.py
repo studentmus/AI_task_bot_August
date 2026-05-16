@@ -128,6 +128,21 @@ class TaskActions:
         logger.info("Task category set id=%s → %s", task_id, category)
         return f"🏷 «{task.text}» → категория «{category}»."
 
+    def edit_task_title(self, task_id: int, new_title: str) -> str:
+        task = self._get_or_raise(task_id)
+        old_name = task.text
+        google_event_id = task.radicale_uid or None
+        self._repo.update_text(task_id, new_title)
+        self._session.commit()
+        logger.info("Task renamed id=%s: %r → %r", task_id, old_name, new_title)
+        if google_event_id:
+            try:
+                from app.domain.google_calendar import rename_event
+                rename_event(google_event_id, new_title)
+            except Exception:
+                logger.exception("Google Calendar rename failed for task id=%s", task_id)
+        return f"✏️ «{old_name}» → «{new_title}»."
+
     # ------------------------------------------------------------------
     # Планирование дня
     # ------------------------------------------------------------------

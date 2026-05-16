@@ -206,6 +206,29 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "edit_task_title",
+            "description": (
+                "Изменить название существующей задачи. Используй когда пользователь хочет "
+                "переименовать, исправить опечатку или изменить формулировку задачи. "
+                "Передай task_id если известен, иначе task_text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    **_TASK_REF_PROPS,
+                    "new_title": {
+                        "type": "string",
+                        "description": "Новое название задачи (без дат и времени).",
+                    },
+                },
+                "required": ["new_title"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_today_plan",
             "description": (
                 "Получить список задач на сегодня. Используй когда пользователь спрашивает "

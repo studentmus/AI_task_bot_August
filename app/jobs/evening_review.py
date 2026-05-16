@@ -1,5 +1,6 @@
 import logging
-from datetime import date
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 
@@ -16,7 +17,7 @@ async def send_evening_review(bot: Bot) -> None:
         logger.warning("evening_review: allowed_user_id not set, skipping")
         return
 
-    today_str = date.today().isoformat()
+    today_str = datetime.now(ZoneInfo(settings.task_timezone)).date().isoformat()
 
     with SessionLocal() as session:
         done_tasks = (

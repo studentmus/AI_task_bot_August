@@ -2,6 +2,7 @@ import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import aiofiles
 
@@ -141,6 +142,53 @@ async def read_memory_from_obsidian() -> str:
     except OSError as exc:
         logger.error("read_memory_from_obsidian: %s", exc)
         return f"Ошибка чтения файла памяти: {exc}"
+
+
+async def append_to_bot_log(filename: str, text: str) -> str:
+    """Write a timestamped entry to MyBrain/_bot/{filename}.
+
+    Unlike append_obsidian_log, takes a literal filename (e.g. "health.md")
+    without sphere alias resolution — intended for programmatic callers like
+    scheduled pings.
+    """
+    path = Path(settings.obsidian_vault_path) / "_bot" / filename
+
+    if not path.exists():
+        return f"Ошибка: файл '{filename}' не найден в _bot/."
+
+    tz = ZoneInfo(settings.task_timezone)
+    timestamp = datetime.now(tz=tz).strftime("%Y-%m-%d %H:%M")
+    log_line = f"- [{timestamp}] {text}\n"
+
+    try:
+        async with aiofiles.open(path, encoding="utf-8") as f:
+            content = await f.read()
+
+        if _LOG_HEADER in content:
+            lines = content.splitlines(keepends=True)
+            insert_at = next(
+                (i + 1 for i, ln in enumerate(lines) if ln.strip() == _LOG_HEADER),
+                None,
+            )
+            if insert_at is not None:
+                lines.insert(insert_at, log_line)
+                new_content = "".join(lines)
+            else:
+                new_content = content + log_line
+        else:
+            sep = "\n" if content and not content.endswith("\n") else ""
+            new_content = f"{content}{sep}\n{_LOG_HEADER}\n{log_line}"
+
+        async with aiofiles.open(path, "w", encoding="utf-8") as f:
+            await f.write(new_content)
+
+    except OSError as exc:
+        logger.error("append_to_bot_log write: %s", exc)
+        return f"Ошибка записи файла: {exc}"
+
+    stem = Path(filename).stem
+    git_result = await _git_sync(f"_bot/{filename}", stem)
+    return f"Записано. Git: {git_result}"
 
 
 async def _git_sync(rel_path: str, sphere: str) -> str:

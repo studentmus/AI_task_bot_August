@@ -49,10 +49,10 @@ async def main() -> None:
     )
     dp = Dispatcher()
     dp.update.outer_middleware(AllowedUserMiddleware())
+    dp.include_router(memory_router)  # FSM ping handler — must be first
     dp.include_router(main_router)
-    dp.include_router(memory_router)
 
-    scheduler = start_scheduler(bot)
+    scheduler = start_scheduler(bot, dp.storage)
     try:
         logger.info("Starting polling (allowed_user_id=%s)", settings.allowed_user_id)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
