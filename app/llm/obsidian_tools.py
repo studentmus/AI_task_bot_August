@@ -63,6 +63,61 @@ def read_energy_matrix_sync() -> str:
     return content
 
 
+# ── In-process кэш project_*.md файлов ───────────────────────────────────────
+_PROJECTS_CACHE: dict = {"content": "", "ts": 0.0}
+_PROJECTS_TTL = 300  # секунд
+
+_PROJECT_SECTIONS = {"## Current State", "## Next Actions"}
+_MAX_SECTION_CHARS = 400  # максимум символов на секцию
+
+
+def _extract_project_sections(text: str) -> str:
+    """Извлекает только ## Current State и ## Next Actions из файла проекта."""
+    lines = text.splitlines()
+    result: list[str] = []
+    in_section = False
+    char_count = 0
+
+    for line in lines:
+        if line.startswith("## "):
+            in_section = any(line.startswith(s) for s in _PROJECT_SECTIONS)
+            if in_section:
+                result.append(line)
+            continue
+        if in_section:
+            if char_count < _MAX_SECTION_CHARS:
+                result.append(line)
+                char_count += len(line)
+            elif not result[-1].endswith("…"):
+                result.append("…")
+
+    return "\n".join(result).strip()
+
+
+def read_project_files_sync() -> str:
+    """Читает все _bot/project_*.md файлы, возвращает Current State + Next Actions. TTL 5 мин."""
+    now = time.monotonic()
+    if now - _PROJECTS_CACHE["ts"] < _PROJECTS_TTL:
+        return _PROJECTS_CACHE["content"]
+
+    bot_dir = Path(settings.obsidian_vault_path) / "_bot"
+    parts: list[str] = []
+
+    for path in sorted(bot_dir.glob("project_*.md")):
+        try:
+            raw = path.read_text(encoding="utf-8").strip()
+        except (OSError, FileNotFoundError):
+            continue
+        extracted = _extract_project_sections(raw)
+        if extracted:
+            parts.append(f"=== {path.stem} ===\n{extracted}")
+
+    content = "\n\n".join(parts)
+    _PROJECTS_CACHE["content"] = content
+    _PROJECTS_CACHE["ts"] = now
+    return content
+
+
 def _write_log_entry(sphere: str, raw_text: str, logged_at: str) -> int | None:
     """Дублирует запись лога в SQLite. Возвращает entry ID или None при ошибке."""
     user_id = settings.allowed_user_id
@@ -201,6 +256,8 @@ async def append_obsidian_log(sphere: str, entry: str) -> str:
     entry_id = _write_log_entry(sphere=resolved, raw_text=entry, logged_at=timestamp)
     if entry_id is not None:
         _schedule_extraction(entry_id, resolved, entry)
+    else:
+        logger.warning("log_entry NOT written to SQLite for sphere=%s — check allowed_user_id config", resolved)
     _schedule_git_sync(f"_bot/{resolved}.md", resolved)
     return "Запись добавлена."
 
@@ -433,6 +490,8 @@ async def append_to_bot_log(filename: str, text: str) -> str:
     entry_id = _write_log_entry(sphere=stem, raw_text=text, logged_at=timestamp)
     if entry_id is not None:
         _schedule_extraction(entry_id, stem, text)
+    else:
+        logger.warning("log_entry NOT written to SQLite for sphere=%s — check allowed_user_id config", stem)
     _schedule_git_sync(f"_bot/{filename}", stem)
     return "Записано."
 

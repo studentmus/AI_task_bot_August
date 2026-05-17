@@ -1,6 +1,6 @@
 August AI Assist — Полный технический контекст проекта
 
-  Дата редакции: 16.05.2026
+  Дата редакции: 17.05.2026
 
   ---
   Что это
@@ -21,8 +21,8 @@ August AI Assist — Полный технический контекст про
   Бот          | aiogram 3.x
   LLM          | DeepSeek API, deepseek-chat, tool calling
   БД           | SQLite + SQLAlchemy ORM
-  Календарь    | Google Calendar API (только) — Radicale УДАЛЁН
-  Планировщик  | APScheduler (CronTrigger.from_crontab + IntervalTrigger)
+  Календарь    | Google Calendar API — create/update/delete/rename_event
+  Планировщик  | APScheduler (CronTrigger + IntervalTrigger)
   Настройки    | pydantic-settings, .env файл
   Obsidian     | Git (add → commit → pull --rebase → push) через asyncio subprocess
   Таймзона     | TASK_TIMEZONE в .env, применяется глобально везде
@@ -37,45 +37,46 @@ August AI Assist — Полный технический контекст про
   allowed_user_id (int | None)
   log_level=INFO
 
-  УДАЛЕНО: radicale_url, radicale_user, radicale_pass
-
   ---
   Структура файлов
 
   AI_task_man/
   ├── app/
-  │   ├── main.py                    # Порядок роутеров: memory → log → main
+  │   ├── main.py                    # Порядок роутеров: memory → log → motivation → main
   │   │                              # SQLiteFSMStorage, BotCommand регистрация
   │   ├── config.py
   │   ├── bot/
-  │   │   ├── states.py              # PingState + LogState (6 сфер)
+  │   │   ├── states.py              # PingState + LogState (8 сфер)
   │   │   └── handlers/
   │   │       ├── commands.py        # /start (показывает клавиатуру), /cleanup
-  │   │       ├── log_handler.py     # FSM-логирование: кнопки, /sleep, /undo
+  │   │       ├── log_handler.py     # FSM-логирование: кнопки, /undo, автовыход 60с
   │   │       ├── memory.py          # FSM-обработчик ответов на пинги (memory_router)
   │   │       ├── message_router.py  # NLP-диспетчер (dispatch_text) — только свободный текст
+  │   │       ├── motivation.py      # /motivate + пассивный триггер (motivation_router)
   │   │       └── tasks.py           # _build_card, _build_keyboard, tasks_router (колбэки)
   │   ├── domain/
   │   │   ├── google_calendar.py     # create/update/delete/rename_event/mark_done
-  │   │   │                          # Фикс midnight crossing: конец дня переносится на след. день
   │   │   ├── memory_service.py      # MemoryService.format_for_context() — legacy SQLite
+  │   │   ├── next_step.py           # suggest_next_step() — энергия + GCal + алёрты + бэклог
   │   │   ├── task_actions.py        # complete/delete/move/snooze/set_category/edit_task_title
   │   │   ├── task_resolution.py     # resolve_task_reference() — fuzzy поиск по тексту
   │   │   └── task_service.py        # TaskService.create_task() (rule-based путь, status=pending)
   │   ├── jobs/
   │   │   ├── scheduler.py           # start_scheduler() — все джобы
-  │   │   │                          # _load_protocols() читает _bot/protocols.yaml
-  │   │   │                          # _register_protocol_pings() — динамические пинги
+  │   │   ├── backlog_nudge.py       # send_backlog_nudge() — 14:00, случайная задача из бэклога
   │   │   ├── due_pings.py           # check_due_items() — каждые 10 минут
   │   │   ├── morning_plan.py        # send_morning_plan() — 08:00
   │   │   ├── evening_review.py      # send_evening_review() — 21:00
+  │   │   ├── next_step_push.py      # send_next_step_push() — 12:30
+  │   │   ├── alert_checker.py       # check_proactive_alerts() — 20:30
   │   │   └── ping_service.py        # send_scheduled_ping() — плановые FSM-опросы
   │   ├── llm/
   │   │   ├── deepseek_client.py     # call_deepseek_chat()
   │   │   ├── obsidian_tools.py      # append/read/delete log, save_fact, bg git_sync
   │   │   │                          # read_memory_sync() — TTL-кэш 5 мин для bot_memory.md
+  │   │   │                          # read_energy_matrix_sync() — TTL-кэш 5 мин для energy_matrix.md
   │   │   ├── prompt_builder.py      # build_messages(), build_system_prompt()
-  │   │   │                          # build_obsidian_memory() — последние 15 фактов из кэша
+  │   │   │                          # build_obsidian_memory(), build_backlog(), build_energy_context()
   │   │   ├── tool_executor.py       # execute_tool_call(), _dispatch()
   │   │   └── tool_registry.py       # TOOLS — список инструментов для DeepSeek
   │   ├── parsing/
@@ -86,115 +87,132 @@ August AI Assist — Полный технический контекст про
   │       ├── fsm_storage.py         # SQLiteFSMStorage(BaseStorage) — персистентный FSM
   │       ├── log_repo.py            # LogRepo: insert(), get_recent() для log_entries
   │       ├── memory_repo.py         # search_confirmed_memories — legacy
-  │       └── task_repo.py           # все CRUD-операции над задачами
+  │       └── task_repo.py           # все CRUD + get_backlog_tasks()
   └── data/
       ├── token.json                 # Google OAuth сессия
       ├── tasks.db                   # SQLite (tasks, log_entries, dialog_history, memory_items)
       └── fsm.db                     # SQLite для FSM-состояний (SQLiteFSMStorage)
-
-  УДАЛЕНО: app/calendar/radicale_sync.py
 
   ---
   Порядок регистрации роутеров (main.py) — КРИТИЧНО
 
   1. memory_router   — FSM-ответы на плановые пинги (наивысший приоритет)
   2. log_router      — FSM-логирование по сферам + slash-команды + /undo
-  3. main_router     — NLP-диспетчер свободного текста → LLM
+  3. motivation_router — /motivate команда
+  4. main_router     — NLP-диспетчер свободного текста → LLM
 
   Внутри main_router: commands_router → tasks_router → dispatch_text
 
   ---
   FSM Логирование (log_handler.py) — БЕЗ LLM
 
-  Гибридная архитектура: всё структурированное логирование детерминировано.
-
   СОСТОЯНИЯ (states.py — LogState):
-    sleep | nutrition | training | german | ideas | context
+    sleep | nutrition | training | german | romanian | ideas | context | wishlist
 
-  REPLY KEYBOARD (постоянная, видна всегда):
+  REPLY KEYBOARD (постоянная):
     [🌙 Сон]      [🍽 Питание]   [💪 Тренировка]
-    [📖 Немецкий] [💡 Идеи]      [📊 Контекст]
+    [🌍 Языки]    [💡 Идеи]      [📊 Контекст]
 
-  FLOW:
-    Нажал кнопку → FSM state + data(filename, label) → пиши записи →
-    прямой append_to_bot_log → подтверждение + кнопка [↩ Отменить]
+  При нажатии [🌍 Языки] → inline keyboard:
+    [🇩🇪 Немецкий]  [🇷🇴 Румынский]
+  Выбор языка → входит в LogState.german или LogState.romanian.
 
-    Пишешь другую кнопку → переключаешься в новую сферу
-    Пишешь "стоп/выход/готово" или /stop → выходишь из режима
-    Вопрос или команда (_LOG_ESCAPE_RE) → маршрутизируется в LLM, не в лог
+  INLINE KEYBOARDS:
+    При входе в режим: [✗ Отмена]
+    После каждой записи: [✅ Готово] [📝 Ещё] / [↩ Отменить]
+      - Готово  → выходит из режима
+      - Ещё     → убирает кнопки, сбрасывает таймер, продолжай писать
+      - Отменить → удаляет последнюю запись
+
+  АВТОВЫХОД: через 60 секунд молчания → "⏱ Режим завершён — нет активности 1 минуту."
+  Таймер сбрасывается на каждой записи и при нажатии [📝 Ещё].
 
   SLASH-КОМАНДЫ (прямая запись без входа в режим):
-    /sleep [текст]    — сон (с умным парсингом времени)
-    /meal [текст]     — питание
+    /sleep [текст]    — сон
+    /meal  [текст]    — питание
     /workout [текст]  — тренировка
-    /german [текст]   — немецкий (/de — alias)
-    /ideas [текст]    — идеи (/idea — alias)
-    /ctx [текст]      — личный контекст (/context — alias)
+    /german [текст] (/de) — немецкий
+    /romanian [текст] (/ro) — румынский
+    /ideas [текст] (/idea) — идеи
+    /ctx [текст] (/context) — личный контекст
+    /wish [текст] (/wishlist) — список покупок
     /stop             — выход из активного режима
+    /undo [сфера]     — отменить последнюю запись
 
-    Без аргументов — входит в FSM-режим соответствующей сферы.
+  ИСПРАВЛЕНИЯ (май 2026):
+    - Slash-команды внутри LogState больше не записываются как лог
+      (фильтр ~F.text.startswith("/") на handle_log_entry)
+    - "Что сейчас делать" и подобные фразы корректно эскейпят в LLM
+      (_LOG_ESCAPE_RE расширен: что делать/нужно/дальше + следующий шаг)
 
-  ПАРСЕР ВРЕМЕНИ СНА (parse_sleep_time):
-    Все форматы автоматически конвертируются в HH:MM–HH:MM (Xч Yм):
-      23:30-7:00          → 23:30–07:00 (7ч 30м)
-      00 30 - 10 10       → 00:30–10:10 (9ч 40м)
-      12-8                → 00:00–08:00 (8ч)      [12 → полночь]
-      11-7                → 23:00–07:00 (8ч)      [11 → 23]
-      9-7                 → 21:00–07:00 (10ч)     [duration-check]
-      с девяти до шести   → 21:00–06:00 (9ч)
-      с полуночи до 8     → 00:00–08:00 (8ч)
-      лег в 23, встал в 7 → 23:00–07:00 (8ч)
-      с 00 30 до 10 10    → 00:30–10:10 (9ч 40м)
+  UNDO:
+    /undo [сфера] — удаляет последнюю запись
+    Кнопка [↩ Отменить] — инлайн после каждой записи
+    Аргументы: sleep/сон, meal/nutrition/питание, workout/training/тренировка,
+                german/немецкий/de, romanian/румынский/ro, ideas/идеи,
+                ctx/context/контекст, wish/wishlist/список, health/здоровье
 
-    Логика нормализации часов старта:
-      12 → 0, 10/11 → +12, 6-9 → +12 если duration > 16ч, остальные as-is
+  ---
+  Список покупок / Wishlist
 
-    Остаток текста сохраняется как комментарий:
-      "23:30-7, хорошо выспался" → "23:30–07:00 (7ч 30м) — хорошо выспался"
+  /wish [текст] или /wishlist — входит в LogState.wishlist или пишет сразу
+  Файл: _bot/wishlist.md (создаётся автоматически)
+  Формат записей с категорией: [Техника] AirPods Pro
+  SPHERE_MAP: "wishlist" / "список" / "покупки" / "wish" → wishlist
 
-  ОТМЕНА ЗАПИСЕЙ:
-    [↩ Отменить]    — инлайн-кнопка сразу после каждой записи
-                      удаляет первую строку после "## Log" в файле
-    /undo           — отменить последнюю запись в активной сфере
-    /undo sleep     — отменить в sleep.md
-    /undo meal      — в nutrition.md
-    /undo workout   — в training.md
-    /undo health    — в health.md (записи от пингов)
-    Принимает и по-русски: /undo сон, /undo питание
+  ---
+  Мотивация (motivation.py)
 
-  АВТОСОЗДАНИЕ ФАЙЛОВ:
-    Если файл сферы не существует в _bot/ — создаётся автоматически
-    с заголовком "# Sphere\n\n## Log\n".
+  /motivate [категория] — явный вызов
+  Категории: зал, тренировка, gym, training, thesis, work, немецкий, german,
+             румынский, romanian, языки
+  Без категории → секция "Общее" из motivation.md
+
+  Пассивный триггер: фразы "не хочу в зал" / "не пойду сегодня" / "лень тренироваться"
+  + энергия >= 5 → автоматический мотивационный пинок (категория "зал").
+
+  Файл с контентом: {obsidian_vault_path}/_bot/motivation.md
+  Стиль ответа: жёсткий, прямой, с сарказмом — по просьбе пользователя.
+
+  ---
+  Бэклог задач (задачи без даты)
+
+  create_task с date=null → статус confirmed, suggested_date=NULL → бэклог.
+  LLM получает список бэклога в промпте (build_backlog()) — может предлагать в свободное время.
+  next_step engine включает бэклог в контекст → учитывает при рекомендации "что делать".
+  14:00 ежедневно: send_backlog_nudge() отправляет случайную задачу из бэклога.
+  /undo и complete_task работают с бэклог-задачами как обычно (по task_id).
 
   ---
   Каскад роутинга свободного текста (dispatch_text в message_router.py)
 
   Вызывается только при StateFilter(None) — когда пользователь НЕ в LogState.
-  Если пользователь в LogState, его текст идёт в handle_log_entry (log_handler).
 
-  Шаг | Триггер                                        | Действие
-  -----+------------------------------------------------+---------------------------
-  FSM  | PingState.waiting_response                     | memory_router → _bot/file
-  0    | _QUESTION_RE: ?, "не вижу", "почему", "куда"  | → LLM
-  0.5  | _CONVERSATION_RE: "ок", "нет, не надо"         | → LLM как чат
-  1    | _OBSIDIAN_LOG_FULL_RE: "запиши в питание: текст"| → прямой append без LLM
-  2    | _OBSIDIAN_LOG_RE: "запиши в питание" (без текста)| → LLM уточнит
-  3    | _LOG_CONTINUATION_RE + кэш 15 мин: "ещё съел" | → прямой append без LLM
-  4    | _FACT_VERBS_RE: съел/спал/купил/позвонил...    | → LLM (complete или log)
-  4.5  | _MEAL_NOUN_RE: начало с завтрак/обед/ужин      | → LLM (log или task)
-  5    | COMMAND_KEYWORDS: покажи/перенеси/удали/запомни | → LLM
-       |   + поставь/измени/поменяй/переименуй          |
-  5.5  | _CONTEXT_EDIT_RE: "ей/её/эту" (только местоим) | → LLM (move_task)
-  5.7  | _READ_REQUEST_RE: прочитай/что записалось       | → LLM (read_bot_log)
-  6    | Fallback: rule-based parse_task()              | → карточка confirm/reject
+  Шаг | Триггер                                           | Действие
+  -----+---------------------------------------------------+---------------------------
+  FSM  | PingState.waiting_response                        | memory_router → _bot/file
+  -0.5 | _TRAINING_REFUSAL_RE + энергия >= 5              | motivation_router (пассивный)
+  0    | _CANT_SLEEP_RE: "не спится", "бессонница"         | лог health.md + лёгкая рек.
+  0.5  | _NEXT_STEP_RE: "что делать", "следующий шаг"      | next_step engine
+  1    | _QUESTION_RE: ?, "почему", "есть ли"              | → LLM
+  1.5  | _CONVERSATION_RE: "ок", "нет, не надо"            | → LLM как чат
+  2    | _OBSIDIAN_LOG_FULL_RE: "запиши в питание: текст"  | → прямой append без LLM
+  3    | _OBSIDIAN_LOG_RE: "запиши в питание" (без текста) | → LLM уточнит
+  4    | _LOG_CONTINUATION_RE + кэш 15 мин: "ещё съел"    | → прямой append без LLM
+  5    | _FACT_VERBS_RE: съел/спал/купил...                | → LLM (complete или log)
+  5.5  | _MEAL_NOUN_RE: начало с завтрак/обед/ужин         | → LLM
+  6    | COMMAND_KEYWORDS: покажи/перенеси/удали            | → LLM
+  6.5  | _CONTEXT_EDIT_RE: "ей/её/эту" (местоимения)       | → LLM (move_task)
+  6.7  | _READ_REQUEST_RE: прочитай/что записалось          | → LLM (read_bot_log)
+  7    | Fallback: rule-based parse_task()                 | → карточка confirm/reject
 
   ---
   Инструменты LLM (tool_registry.py)
 
   Инструмент                              | Назначение
   ----------------------------------------+------------------------------------------
-  create_task(text, date, time?)          | Создать задачу → confirmed + Google Cal
-                                          | После ответа LLM → автоматически карточка
+  create_task(text, date?, time?)          | Создать задачу → confirmed + Google Cal
+                                          | date=null → бэклог (без даты)
   complete_task(task_id/text/ids[])       | Выполнить (батч через task_ids=[])
   delete_task(task_id/text/ids[])         | Удалить (батч)
   move_task(task_id/text, date?, time?)   | Перенести дату/время
@@ -202,13 +220,15 @@ August AI Assist — Полный технический контекст про
   edit_task_title(task_id/text, new_title)| Переименовать задачу + Google Cal patch
   set_category(task_id/text, category)    | Категория: inbox/work/personal/health/...
   get_today_plan(date?)                   | Список задач на дату (null = сегодня)
+  get_calendar_events(date?, days?)       | События из Google Calendar
   append_obsidian_log(sphere, entry)      | Записать факт в лог-файл сферы
   read_bot_log(filename)                  | Прочитать последние 15 строк _bot/file
   save_fact_to_obsidian(fact)             | Постоянный факт → _bot/bot_memory.md
   read_memory_from_obsidian()             | Вся память из bot_memory.md
   read_obsidian_protocol(sphere)          | Протокол/инструкция по сфере
-  query_logs(sphere?, days?)              | Сырые записи из log_entries за N дней (дефолт 7)
-  analyze_logs(sphere, days?)             | Агрегаты по сфере: среднее/streak/частота (дефолт 14)
+  query_logs(sphere?, days?)              | Сырые записи из log_entries за N дней
+  analyze_logs(sphere, days?)             | Агрегаты: среднее/streak/частота
+  log_energy(level, notes?)              | Записать уровень энергии 1-10
 
   Батч: task_ids=[id1, id2] для complete/delete.
   Поиск: task_text → resolve_task_reference() → fuzzy LIKE-поиск по SQLite.
@@ -227,130 +247,71 @@ August AI Assist — Полный технический контекст про
   румынский, romanian                           | romanian.md
   контекст, ivan_context                        | ivan_context.md
   задачи, tasks                                 | tasks.md
+  энергия, energy                               | energy.md
+  wishlist, список, покупки, wish               | wishlist.md
   (память)                                      | bot_memory.md
+  (матрица энергии)                             | energy_matrix.md
+  (мотивация)                                   | motivation.md
   (пинги: здоровье)                             | health.md
 
-  FSM-кнопки используют отдельные файлы: ideas.md (создаётся автоматически).
-
-  Путь: Path(settings.obsidian_vault_path) / "_bot" / f"{_resolve_sphere(sphere)}.md"
-  НЕ МЕНЯТЬ эту логику. append_to_bot_log принимает прямое имя файла (без алиасинга).
-
-  Git sync НЕБЛОКИРУЮЩИЙ — фоновый asyncio.create_task() + asyncio.Lock:
-    Порядок: git add → git commit → git pull --rebase → git push
-    При конфликте rebase: rebase --abort, пробует push напрямую
-    Не блокирует ответ пользователю, ошибки только в системный лог.
-
-  delete_last_log_entry: удаляет первую запись после "## Log" → git push.
-
   ---
-  Долгосрочная память (bot_memory.md)
+  Energy Matrix (energy_matrix.md)
 
-  Факты о пользователе хранятся в {obsidian_vault_path}/_bot/bot_memory.md.
-
-  READ (каждый запрос): read_memory_sync() — TTL-кэш 5 минут (in-process dict).
-    При сохранении нового факта: invalidate_memory_cache() сразу сбрасывает кэш.
-    Следующий запрос прочитает обновлённый файл.
-
-  INJECT в промпт: build_obsidian_memory() в prompt_builder.py
-    — читает через кэш, последние 15 фактов из файла
-    — вставляется в system-сообщение перед legacy SQLite-памятью
-
-  SAVE: save_fact_to_obsidian(fact) → appends "- [YYYY-MM-DD] Факт: ..." + git sync
-
-  ---
-  Структурированные логи (SQLite log_entries)
-
-  Каждая запись в Obsidian параллельно дублируется в БД для аналитики.
-
-  Таблица log_entries (db.py → LogEntry):
-    id, user_id, sphere, raw_text, logged_at (YYYY-MM-DD HH:MM), created_at
-
-  Запись: _write_log_entry() в obsidian_tools.py
-    — вызывается из append_obsidian_log() и append_to_bot_log()
-    — открывает отдельную SessionLocal — не блокирует основной коммит
-
-  Чтение: LogRepo(session).get_recent(user_id, sphere?, days, limit)
-    — фильтрует по cutoff date и sphere
-    — используется инструментом query_logs
-
-  Инструмент query_logs:
-    — sphere: "sleep" / "nutrition" / "training" / "german" / "health" и т.д.
-    — days: глубина выборки (по умолчанию 7)
-    — возвращает список в хронологическом порядке
-
-  ---
-  FSM Персистентность (storage/fsm_storage.py)
-
-  SQLiteFSMStorage(BaseStorage) — заменяет MemoryStorage (состояния не теряются при рестарте).
-
-  Файл: data/fsm.db (отдельно от tasks.db)
-  Режим: WAL (concurrent reads)
-  Ключ: "{bot_id}:{chat_id}:{user_id}:{destiny}"
-  Методы: set_state, get_state, set_data, get_data, close
-  Потокобезопасность: asyncio.Lock (lazy init) + asyncio.to_thread для sync SQLite
-
-  Инициализация в main.py:
-    fsm_db = str(Path(settings.db_path).parent / "fsm.db")
-    storage = SQLiteFSMStorage(fsm_db)
-    dp = Dispatcher(storage=storage)
-
-  ---
-  БД — модели (storage/db.py)
-
-  Task: id, text, category, importance, priority, suggested_date (YYYY-MM-DD),
-        event_time (HH:MM или HH:MM-HH:MM), all_day (bool), google_event_id,
-        status (pending/confirmed/done/cancelled), created_at, telegram_user_id,
-        confirmed_at, last_ping_at, ping_count
-
-  ПЕРЕИМЕНОВАНО: radicale_uid → google_event_id (миграция в _apply_migrations())
-
-  MemoryItem: id, user_id, content, memory_type, status (proposed/confirmed/rejected)
-              — legacy, новая память идёт в Obsidian
-
-  DialogMessage: id, user_id, role (user/assistant), content, created_at
-                 — история, последние 20 сообщений (10 ходов), TTL 24ч
-
-  LogEntry: id, user_id, sphere, raw_text, logged_at, created_at
-            — дубль каждой Obsidian-записи для SQL-аналитики
-
-  ВАЖНО по статусам задач:
-    LLM-путь (tool_executor create_task): insert_pending → confirm() сразу
-      → статус confirmed, видна везде, не уязвима для /cleanup
-    Rule-based путь (TaskService.create_task): статус pending, ждёт кнопки
-    get_upcoming_tasks и get_today_plan включают оба статуса.
+  Файл: {obsidian_vault_path}/_bot/energy_matrix.md
+  Читается: read_energy_matrix_sync() — TTL-кэш 5 мин (аналог read_memory_sync)
+  Инжектируется: в next_step engine при каждом вызове suggest_next_step()
+  Структура:
+    ## Planning Principles — приоритеты и якоря дня
+    ## Level HIGH (7-10) — deep work, focused work
+    ## Level MEDIUM (4-6) — study, review, languages, light code
+    ## Level LOW (1-3) — passive learning, guitar, admin
+    ## Level ZERO (0) — только сон, еда, прогулка
+    ## After Deep Cognitive — после умственного истощения
+    ## After Heavy Training — после тяжёлой тренировки
+    ## Frequency Constraints — интервалы между активностями
+    ## Priority Weights — иерархия целей (thesis > MSc > deadlines > freelance)
+    ## Context Signals — инференс энергии без прямого вопроса (читай energy.md первым)
 
   ---
   Scheduled Jobs (scheduler.py)
 
-  Job                 | Когда              | Что делает
-  --------------------+--------------------+----------------------------------
-  check_due_items     | каждые 10 минут    | Напоминания о просроченных задачах
-  send_morning_plan   | 08:00 TASK_TZ      | Список задач на сегодня
-  send_evening_review | 21:00 TASK_TZ      | Итоги: выполнено / не выполнено
-  (из protocols.yaml) | crontab-строка     | FSM-пинги (конфигурируемые)
-
-  morning_plan и evening_review используют:
-    datetime.now(ZoneInfo(settings.task_timezone)).date() — НЕ date.today()
+  Job                   | Когда              | Что делает
+  ----------------------+--------------------+----------------------------------
+  check_due_items       | каждые 10 минут    | Напоминания о просроченных задачах
+  send_morning_plan     | 08:00 TASK_TZ      | Список задач на сегодня
+  send_next_step_push   | 12:30 TASK_TZ      | Рекомендация следующего шага
+  send_backlog_nudge    | 14:00 TASK_TZ      | Случайная задача из бэклога
+  check_proactive_alerts| 20:30 TASK_TZ      | Проактивные алёрты по паттернам
+  send_evening_review   | 21:00 TASK_TZ      | Итоги: выполнено / не выполнено
+  (из protocols.yaml)   | crontab-строка     | FSM-пинги (конфигурируемые)
 
   Добавление нового пинга (без изменения кода):
     Отредактировать {obsidian_vault_path}/_bot/protocols.yaml:
-      - name: "sleep"
-        question: "Как спалось? Укажи время сна."
+      - id: "sleep"
+        question: "Как спалось?"
         filename: "sleep.md"
         cron: "0 9 * * *"
-    Перезапустить бот — _load_protocols() подхватит новые пинги.
-    При отсутствии файла — создаётся с дефолтным пингом здоровья (22:00).
+    Перезапустить бот.
+
+  Дефолтные пинги в protocols.yaml:
+    - energy: 20:00 — "Как твой энергетический уровень сегодня? Оцени 1-10"
+    - health:  22:00 — "Как самочувствие сегодня? Что было с тренировкой?"
 
   ---
   FSM Плановые пинги (ping_service.py + memory.py)
 
   1. send_scheduled_ping(bot, storage, question, filename)
-     — отправляет вопрос пользователю
-     — устанавливает PingState.waiting_response через FSM storage
-     — сохраняет filename в FSM data
-  2. memory_router перехватывает ответ (зарегистрирован ПЕРВЫМ в main.py)
-  3. Пишет через append_to_bot_log(filename, text) — без SPHERE_MAP
-     — дублирует запись в log_entries SQLite
+  2. memory_router перехватывает ответ (зарегистрирован ПЕРВЫМ)
+  3. Пишет через append_to_bot_log(filename, text)
+
+  ---
+  Next-Step Engine (domain/next_step.py)
+
+  Вызывается: _NEXT_STEP_RE в dispatch_text + send_next_step_push в 12:30
+  Контекст: дата/время, энергия (source: explicit/inferred), свободное окно GCal,
+            задачи на сегодня, бэклог (топ-5), алёрты, energy_matrix.md (полный текст)
+  LLM-промпт: жёсткий коуч, один конкретный шаг, учитывает Planning Principles + матрицу
+  Гейт 23:40–05:00: возвращает фиксированное "ложись спать"
 
   ---
   История диалога и State Injection
@@ -359,47 +320,47 @@ August AI Assist — Полный технический контекст про
     1. build_system_prompt() — правила LLM, дата/время, таймзона
     2. build_obsidian_memory() — последние 15 фактов из bot_memory.md (TTL-кэш)
     3. build_memory_context() — legacy SQLite-память (MemoryItem)
-    4. build_day_summary() — предстоящие задачи с id, датой, временем, статусом
-    5. build_done_history() — последние 5 выполненных задач
+    4. build_energy_context() — уровень энергии + сон (из domain/state.py)
+    5. build_day_summary() — предстоящие задачи с id, датой, временем, статусом
+    6. build_done_history() — последние 5 выполненных задач
+    7. build_backlog() — задачи без даты (бэклог)
 
-  Стек сообщений: [system] + dialog_repo.get_recent(20) + [current_user_msg]
-  Фильтр: системные ошибки не попадают в dialog_history.
+  ---
+  БД — модели (storage/db.py)
 
-  Правила в системном промпте по задачам (4 уровня приоритета):
-    1. task_id из предыдущего tool-response → использовать его
-    2. Если нет ID, но есть task_text → resolve_task_reference()
-    3. Если явно упомянут текст задачи → искать по тексту
-    4. Использовать context clues (местоимения, "это", "её")
+  Task: id, text, category, importance, priority, suggested_date (nullable!),
+        event_time, all_day, google_event_id,
+        status (pending/confirmed/done/cancelled), created_at, telegram_user_id,
+        confirmed_at, last_ping_at, ping_count
+
+  suggested_date=NULL → задача в бэклоге (нет конкретной даты).
+  get_backlog_tasks(user_id) — задачи где suggested_date IS NULL.
+
+  MemoryItem: legacy, новая память идёт в Obsidian (bot_memory.md)
+  DialogMessage: история, последние 20 сообщений (10 ходов), TTL 24ч
+  LogEntry: id, user_id, sphere, raw_text, logged_at, created_at, structured_data (JSON)
 
   ---
   Google Calendar (domain/google_calendar.py)
 
   Операции: create_event, update_event, delete_event, rename_event, mark_done
-  JSON Merge Patch: events().patch() — меняет только нужные поля (summary, start, end)
-
-  ФИКС midnight crossing:
-    Если end_time < start_time (например, 23:00 + 1ч → 00:00),
-    end_date сдвигается на следующий день. Иначе Google API возвращает
-    "timeRangeEmpty" 400 error.
-
-  Поле google_event_id в Task хранит event ID из Google Calendar.
-  create_task в tool_executor: при ошибке Google — задача сохраняется только в SQLite.
+  JSON Merge Patch: events().patch() — меняет только нужные поля
+  ФИКС midnight crossing: если end_time < start_time → end_date +1 день
+  При ошибке GCal — задача сохраняется только в SQLite (без краша).
+  Бэклог-задачи (date=None) — не синхронизируются с GCal.
 
   ---
   Карточки задач (tasks.py)
 
-  _build_card: 3-строчный HTML-формат:
-    📅 Дата | ⏰ Время / весь день | [статус]
-    📝 Текст задачи
-    🗂 Категория
+  _build_card: HTML-формат с датой, временем/весь день, текстом, категорией
+  _build_keyboard: [✏️ Дата] [🕐 Время] / [📝 Название] [🗑 Удалить]
+  После LLM create_task: отслеживаются created_task_ids → карточки после ответа LLM
 
-  _build_keyboard: 2 ряда инлайн-кнопок:
-    [✏️ Дата] [🕐 Время]
-    [📝 Название] [🗑 Удалить]
+  ---
+  FSM Персистентность (storage/fsm_storage.py)
 
-  После LLM-создания задачи (create_task tool call):
-    _run_llm_chat() отслеживает created_task_ids из tool-ответов,
-    после текстового ответа LLM отправляет карточки для всех созданных задач.
+  SQLiteFSMStorage — файл data/fsm.db, WAL-режим, asyncio.Lock
+  Состояния сохраняются при рестарте бота.
 
   ---
   Деплой
@@ -410,93 +371,66 @@ August AI Assist — Полный технический контекст про
   ---
   Ловушки и инварианты
 
-  ПОРЯДОК РОУТЕРОВ в main.py:
-    memory_router → log_router → main_router
-    Нарушение → FSM-ответы на пинги попадают в dispatch_text
+  ПОРЯДОК РОУТЕРОВ: memory → log → motivation → main. Нарушение ломает FSM.
 
   СОСТОЯНИЯ FSM:
-    В LogState.* dispatch_text не вызывается (StateFilter(None) не проходит).
-    В PingState.waiting_response перехватывает memory_router до log_router.
-    FSM персистентен через SQLiteFSMStorage — состояние сохраняется при рестарте.
+    LogState: sleep, nutrition, training, german, romanian, ideas, context, wishlist
+    В LogState dispatch_text не вызывается (StateFilter(None) не проходит).
+    В LogState slash-команды работают корректно (~F.text.startswith("/") в handle_log_entry).
+    В PingState.waiting_response перехватывает memory_router.
+
+  ЯЗЫКОВОЕ ПОДМЕНЮ:
+    "🌍 Языки" не в _SPHERES — отдельный хендлер handle_lang_button.
+    _BUTTON_TEXTS = {"🌙 Сон", "🍽 Питание", "💪 Тренировка", "💡 Идеи", "📊 Контекст"}
+    Callback "lang:german" / "lang:romanian" → _enter_state с user_id из callback.from_user.
+
+  АВТОВЫХОД ИЗ LОГSTATE:
+    _timeout_tasks: dict[int, asyncio.Task] — per-user, хранится в памяти процесса.
+    При рестарте бота таймеры теряются (состояние FSM сохраняется, таймер — нет).
+    _start_timeout() при каждой записи и входе в режим.
+    _cancel_timeout() при явном выходе (stop, done, cancel).
+
+  БЭКЛОГ:
+    create_task без date → suggested_date=NULL в SQLite.
+    get_upcoming_tasks фильтрует suggested_date >= today → бэклог не попадает.
+    get_backlog_tasks фильтрует suggested_date IS NULL.
+    Google Calendar sync пропускается для бэклог-задач.
 
   ПУТИ OBSIDIAN:
     Path(settings.obsidian_vault_path) / "_bot" / filename — не менять.
     append_to_bot_log — прямое имя файла, без SPHERE_MAP.
     append_obsidian_log — через _resolve_sphere(), проверяет существование файла.
 
-  GIT SYNC:
-    Порядок операций: add → commit → pull --rebase → push (не pull до commit!)
-    Иначе "Your local changes would be overwritten by merge"
-    Все git-операции сериализованы через _GIT_LOCK.
+  GIT SYNC (obsidian_tools.py):
+    Порядок: add → commit → pull --rebase → push (не pull до commit!)
+    Все операции сериализованы через _GIT_LOCK (asyncio.Lock).
+    Неблокирующий: фоновый asyncio.create_task().
 
   UNDO МЕХАНИКА:
-    Записи вставляются после "## Log" в начало (самые новые — первые).
+    Записи вставляются после "## Log" в начало (новые — первые).
     delete_last_log_entry удаляет первую непустую строку после "## Log".
-    Кнопка [↩ Отменить] — инлайн, работает независимо от FSM-состояния.
+    /undo [сфера] — текстовая команда; [↩ Отменить] — инлайн-кнопка.
 
   ЗАДАЧИ:
     edit_task_title — только текст, move_task — только дата/время.
     Батч: task_ids=[id1, id2] — один вызов, не два.
-    read_bot_log vs append_obsidian_log: первый читает _bot/, второй пишет через SPHERE_MAP.
-    _READ_REQUEST_RE guard: "прочитай/что записалось" → LLM, НИКОГДА не в rule-based парсер.
+    LLM-путь: insert_pending → confirm() сразу → статус confirmed.
+    Rule-based путь: статус pending, ждёт кнопки подтверждения.
 
-  ПАРСЕР ДАТ (task_engine.py):
-    has_time_signal включает "в/к/на HH" без минут.
-    extract_time_heuristic: "HH MM" пробел, "в/к/на HH" голое, "N часов" patterns.
-    remove_time_words удаляет "в/к/на HH" и "HH MM" из текста задачи.
-    _pm_heuristic(): 13-23 → as-is, 1-12 → +12 если нет явного AM/PM контекста.
+  ПАРСЕР СНА (log_handler.py):
+    Нормализация часов старта: 12→0, 10/11→+12, 6-9→+12 если duration>16ч.
+    Остаток текста → комментарий: "23:30-7, хорошо выспался" → "23:30–07:00 (7ч 30м) — хорошо выспался"
 
-  MARKDOWN CLEANUP (_clean_reply в message_router.py):
-    LLM может вернуть **bold** или *italic* — бот использует ParseMode.HTML.
-    _clean_reply() удаляет markdown bold/italic/code перед отправкой.
-    Также удаляет DeepSeek-специфичные теги (<think> и т.п.).
+  MARKDOWN CLEANUP (_clean_reply):
+    LLM может вернуть **bold** — бот использует ParseMode.HTML.
+    _clean_reply() удаляет markdown + DeepSeek-теги (<think>, ｜...).
 
+  МОТИВАЦИЯ:
+    motivation.md читается синхронно (без кэша — файл редко меняется).
+    Пассивный триггер: _TRAINING_REFUSAL_RE + state.energy >= 5 → _send_motivation(message, "зал").
+    Если энергия неизвестна или < 5 → триггер не срабатывает, обычный LLM.
 
-
-
-Фазы к 100%
-
-  Фаза 1 — Структурированные данные ~15%
-  LLM извлекает нутриенты/нагрузку из свободного текста при записи.
-  - «200г лосося, поел норм» → запись 44г белка, 240ккал в structured_data
-  - «присед 5x5 120кг» → {exercise: squat, weight: 120, sets: 5, reps: 5}
-  - Добавляет JSON-колонку в log_entries
-  - После этого analyze_logs считает реальный суммарный белок за день/неделю
-
-  Зависимость: всё остальное опирается на эту фазу.
-
-  ---
-  Фаза 2 — Проактивные алёрты ~15%
-  Фоновый джоб анализирует паттерны и пишет первым.
-  - Белок < цели 3 дня подряд → сообщение вечером
-  - Тренировка пропущена 3 раза → флаг
-  - Немецкий streak под угрозой → напоминание
-  - Румынский не появлялся N дней → приоритет (дедлайн по гражданству)
-
-  Требует: Фаза 1 (иначе нечего анализировать).
-
-  ---
-  Фаза 3 — Оценка текущего состояния ~15%
-  Бот знает насколько ты сейчас «в ресурсе».
-  - Вечерний пинг: «энергия 1-10?» → хранится
-  - Инференс: сон < 6ч + поздний отбой → завтра «низкий ресурс»
-  - Пользователь говорит «я уставший» → учитывается в рекомендациях
-  - Ключ к адаптивности: одни и те же цели, разная интенсивность под
-  состояние
-
-  ---
-  Фаза 4 — Чтение Google Calendar ~10%
-  - Видеть свободные окна сегодня/завтра
-  - Утренний план включает встречи из GCal рядом с задачами
-  - «В 16:00 у тебя час свободен — хватит на немецкий»
-
-  Это GCal Level 1 который ты отложил — станет нужен здесь.
-
-  ---
-  Фаза 5 — «Один следующий шаг» ~20%
-  Синтез всего: состояние + календарь + протоколы + активные задачи → одна
-  конкретная рекомендация.
-  - Утром или по запросу «что мне сейчас делать?»
-  - Учитывает ресурс: выжат → 15 мин немецкого или спать раньше; в форме →
-  сложная задача или тренировка
-  - Пуш сам или по запросу
+  TTL-КЭШИ (obsidian_tools.py):
+    bot_memory.md: _MEMORY_CACHE, TTL=300с, инвалидируется после save_fact_to_obsidian.
+    energy_matrix.md: _ENERGY_MATRIX_CACHE, TTL=300с.
+    Оба читаются синхронно (локальный файл) — не блокируют event loop.

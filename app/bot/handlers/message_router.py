@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime
 
 from aiogram import F, Router
@@ -71,13 +72,16 @@ COMMAND_KEYWORDS = [
 _CONVERSATION_RE = re.compile(
     # Начинается с разговорного слова/фразы
     r"^(?:нет|да|ок|окей|хорошо|спасибо|понял|понятно|ладно|давай|ага|угу"
-    r"|отлично|супер|класс|пока|стоп|всё)\b"
+    r"|отлично|супер|класс|пока|стоп|всё|не\s+хочу|не\s+буду|не\s+надо"
+    r"|не\s+нужно|не\s+сейчас|потом|позже)\b"
     # ИЛИ содержит явный отказ/отбой в любом месте
     r"|\bне\s+нужно\b"
     r"|\bне\s+надо\b"
     r"|\bотбой\b"
     r"|\bне\s+создавай\b"
-    r"|\bне\s+добавляй\b",
+    r"|\bне\s+добавляй\b"
+    r"|\bне\s+хочу\b"
+    r"|\bне\s+буду\b",
     re.IGNORECASE,
 )
 
@@ -106,6 +110,54 @@ _READ_REQUEST_RE = re.compile(
     r"|\bпоказать\s+(?:лог|запис|данные|что)\b",
     re.IGNORECASE,
 )
+
+# Контекстные объяснения: пользователь сообщает статус/ситуацию, НЕ создаёт задачу.
+# "мы уже выяснили", "ждём документы", "новости будут осенью" → LLM как чат.
+_CONTEXT_UPDATE_RE = re.compile(
+    r"^(?:мы\s+(?:уже|давно)\b"
+    r"|сейчас\s+(?:ждем|ожидаем|просто)\b"
+    r"|уже\s+(?:выяснили|договорились|решили|знаем)\b"
+    r"|ждем\s+(?:документ|ответ|результат|новост)\b"
+    r"|новости\s+будут\b"
+    r"|всё\s+(?:решено|выяснено|договорились)\b)",
+    re.IGNORECASE,
+)
+
+# Детектор "сделал" без дополнительного контекста — авто-лог из рекомендации
+_COMPLETION_RE = re.compile(
+    r"^(?:сделал[а]?|готово|выполнил[а]?|сделано|закончил[а]?|ок\s*,?\s*сделал)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+# Паттерн запроса планирования дня
+_DAY_PLAN_RE = re.compile(
+    r"\bспланируй\s+(?:мой\s+)?день\b"
+    r"|\bплан\s+на\s+(?:сегодня|день|остаток\s+дня)\b"
+    r"|\bкак\s+провести\s+(?:сегодняшний\s+)?день\b"
+    r"|\bчто\s+делать\s+сегодня\s+(?:вообще|весь день)\b",
+    re.IGNORECASE,
+)
+
+# ── In-memory кэш последней 🎯 рекомендации ───────────────────────────────────
+# user_id → {"sphere": str, "entry": str, "ts": float}
+_LAST_RECOMMENDATION: dict[int, dict] = {}
+
+_REC_SPHERE_KEYWORDS: list[tuple[list[str], str]] = [
+    (["румынск", "romanian", "duolingo"],                   "romanian"),
+    (["немецк", "german", "deutsch", "anki"],               "german"),
+    (["тренировк", "зал", "gym", "workout", "силов",
+      "кардио", "пробежк", "прогулк", "walk"],              "training"),
+    (["питани", "nutrition", "поесть", "перекус", "еда"],   "nutrition"),
+    (["сон", "sleep", "вздремн", "лечь спать", "поспать"],  "sleep"),
+]
+
+
+def _extract_rec_sphere(text: str) -> str | None:
+    lower = text.lower()
+    for keywords, sphere in _REC_SPHERE_KEYWORDS:
+        if any(kw in lower for kw in keywords):
+            return sphere
+    return None
 
 # Пассивный детектор отказа от важного дела (тренировка, учёба).
 # Срабатывает только если энергия >= 5 → мотивационный пинок.
@@ -372,6 +424,12 @@ async def dispatch_text(message: Message) -> None:
         await _run_cant_sleep(message, user_id)
         return
 
+    # ── 0.3. ПЛАНИРОВАНИЕ ДНЯ — полный план по часам ────────────────────────────
+    if _DAY_PLAN_RE.search(lower):
+        logger.info("Day plan request → engine for %r", raw)
+        await _run_day_plan(message, user_id)
+        return
+
     # ── 0.5. СЛЕДУЮЩИЙ ШАГ — специализированный engine (энергия + GCal + алёрты) ──
     if _NEXT_STEP_RE.search(lower):
         logger.info("Next-step request → engine for %r", raw)
@@ -418,6 +476,31 @@ async def dispatch_text(message: Message) -> None:
         await _run_log_direct(message, user_id, continuation_sphere, entry)
         return
 
+    # ── 3.5. AUTO-LOG: "сделал" после 🎯 рекомендации — детерминированный лог ──────
+    if _COMPLETION_RE.match(lower):
+        rec = _LAST_RECOMMENDATION.get(user_id)
+        if rec and (time.time() - rec["ts"]) < 3600:
+            sphere, entry = rec["sphere"], rec["entry"]
+            del _LAST_RECOMMENDATION[user_id]
+            logger.info("Auto-log from recommendation: sphere=%s entry=%r", sphere, entry)
+            result = await append_obsidian_log(sphere, entry)
+            if not result.startswith("Ошибка"):
+                _set_log_context(user_id, _resolve_sphere(sphere))
+                await message.answer(f"✅ Записано в {sphere}: {entry}")
+            else:
+                await message.answer(f"Записал! ({result})")
+            try:
+                with SessionLocal() as hist_session:
+                    from app.storage.dialog_repo import DialogRepo
+                    repo = DialogRepo(hist_session)
+                    repo.append(user_id, "user", raw)
+                    repo.append(user_id, "assistant", f"✅ Записано в {sphere}.")
+                    hist_session.commit()
+            except Exception:
+                logger.warning("auto-log dialog history write failed")
+            return
+        # Нет свежей рекомендации → обычный FACT_VERBS путь
+
     # ── 4. ПРОШЕДШЕЕ ВРЕМЯ → LLM выбирает между complete_task и append_obsidian_log ──
     # LLM получает полный список инструментов + список активных задач в промпте.
     # Если прошедшее действие совпадает с активной задачей → complete_task.
@@ -455,6 +538,13 @@ async def dispatch_text(message: Message) -> None:
     # Ставится последней перед rule-based парсером — финальный барьер.
     if _READ_REQUEST_RE.search(lower):
         logger.info("Read request detected → LLM for %r", raw)
+        await _run_llm_chat(message, user_id, raw)
+        return
+
+    # ── 5.8. КОНТЕКСТНОЕ ОБЪЯСНЕНИЕ: пользователь сообщает статус → LLM как чат ──
+    # "мы уже выяснили", "ждем документы", "новости будут осенью" — не задачи.
+    if _CONTEXT_UPDATE_RE.search(lower):
+        logger.info("Context update detected → LLM chat for %r", raw)
         await _run_llm_chat(message, user_id, raw)
         return
 
@@ -535,10 +625,47 @@ async def _run_next_step(message: Message, user_id: int) -> None:
         with SessionLocal() as session:
             from app.domain.next_step import suggest_next_step
             text = await suggest_next_step(session, user_id)
-        await message.answer(f"🎯 {text}")
+        reply = f"🎯 {text}"
+        # Кэшируем sphere для авто-лога при "сделал"
+        sphere = _extract_rec_sphere(text)
+        if sphere:
+            entry = text.split(".")[0].strip()[:150]
+            _LAST_RECOMMENDATION[user_id] = {"sphere": sphere, "entry": entry, "ts": time.time()}
+        await message.answer(reply)
+        try:
+            with SessionLocal() as hist_session:
+                from app.storage.dialog_repo import DialogRepo
+                repo = DialogRepo(hist_session)
+                repo.append(user_id, "user", message.text or "что делать?")
+                repo.append(user_id, "assistant", reply)
+                hist_session.commit()
+        except Exception:
+            logger.warning("next_step dialog history write failed for user=%s", user_id)
     except Exception:
         logger.exception("next_step failed for user=%s", user_id)
         await message.answer("⚠️ Не смог проанализировать. Попробуй позже.")
+
+
+async def _run_day_plan(message: Message, user_id: int) -> None:
+    try:
+        from aiogram.enums import ChatAction
+        await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+        with SessionLocal() as session:
+            from app.domain.next_step import suggest_day_plan
+            text = await suggest_day_plan(session, user_id)
+        await message.answer(f"📅 {text}")
+        try:
+            with SessionLocal() as hist_session:
+                from app.storage.dialog_repo import DialogRepo
+                repo = DialogRepo(hist_session)
+                repo.append(user_id, "user", message.text or "спланируй день")
+                repo.append(user_id, "assistant", f"📅 {text}")
+                hist_session.commit()
+        except Exception:
+            logger.warning("day_plan dialog history write failed for user=%s", user_id)
+    except Exception:
+        logger.exception("day_plan failed for user=%s", user_id)
+        await message.answer("⚠️ Не смог составить план. Попробуй позже.")
 
 
 # ---------------------------------------------------------------------------

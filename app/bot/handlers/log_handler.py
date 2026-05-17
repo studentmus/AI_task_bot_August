@@ -47,14 +47,11 @@ logger = logging.getLogger(__name__)
 LOG_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         [
-            KeyboardButton(text="🌙 Сон"),
-            KeyboardButton(text="🍽 Питание"),
-            KeyboardButton(text="💪 Тренировка"),
+            KeyboardButton(text="📝 Записать →"),
+            KeyboardButton(text="🎯 Что делать?"),
         ],
         [
-            KeyboardButton(text="🌍 Языки"),
-            KeyboardButton(text="💡 Идеи"),
-            KeyboardButton(text="📊 Контекст"),
+            KeyboardButton(text="⚙️ Команды"),
         ],
     ],
     resize_keyboard=True,
@@ -62,6 +59,21 @@ LOG_KEYBOARD = ReplyKeyboardMarkup(
 )
 
 _LANG_BUTTON = "🌍 Языки"
+_WRITE_BUTTON = "📝 Записать →"
+_NEXT_BTN = "🎯 Что делать?"
+_CMDS_BUTTON = "⚙️ Команды"
+
+# Маппинг callback-key → btn_text в _SPHERES
+_KEY_TO_BTN: dict[str, str] = {
+    "sleep":     "🌙 Сон",
+    "nutrition": "🍽 Питание",
+    "training":  "💪 Тренировка",
+    "german":    "📖 Немецкий",
+    "romanian":  "🇷🇴 Румынский",
+    "ideas":     "💡 Идеи",
+    "wishlist":  "🛒 Список",
+    "context":   "📊 Контекст",
+}
 
 # ── Sphere config ────────────────────────────────────────────────────────────
 
@@ -163,12 +175,72 @@ def _start_timeout(bot, chat_id: int, user_id: int, state: FSMContext) -> None:
 
 # ── Inline keyboards ──────────────────────────────────────────────────────────
 
+def _sphere_inline_kb() -> InlineKeyboardMarkup:
+    """Full sphere picker shown when '📝 Записать →' is pressed."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🌙 Сон",        callback_data="log_sphere:sleep"),
+            InlineKeyboardButton(text="🍽 Питание",    callback_data="log_sphere:nutrition"),
+            InlineKeyboardButton(text="💪 Тренировка", callback_data="log_sphere:training"),
+        ],
+        [
+            InlineKeyboardButton(text="🌍 Языки",      callback_data="log_sphere:languages"),
+            InlineKeyboardButton(text="💡 Идеи",       callback_data="log_sphere:ideas"),
+            InlineKeyboardButton(text="🛒 Список",     callback_data="log_sphere:wishlist"),
+        ],
+        [
+            InlineKeyboardButton(text="📊 Контекст",   callback_data="log_sphere:context"),
+        ],
+    ])
+
+
 def _lang_kb() -> InlineKeyboardMarkup:
     """Language picker shown when '🌍 Языки' button is pressed."""
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="🇩🇪 Немецкий", callback_data="lang:german"),
         InlineKeyboardButton(text="🇷🇴 Румынский", callback_data="lang:romanian"),
     ]])
+
+
+def _cmds_inline_kb() -> InlineKeyboardMarkup:
+    """Technical commands shown when '⚙️ Команды' button is pressed."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📋 Задачи",    callback_data="cmd_exec:pending"),
+            InlineKeyboardButton(text="🧹 Очистить",  callback_data="cmd_exec:cleanup"),
+        ],
+        [
+            InlineKeyboardButton(text="↩ Отменить",   callback_data="cmd_exec:undo"),
+            InlineKeyboardButton(text="💢 Мотивация", callback_data="cmd_exec:motivate"),
+        ],
+        [
+            InlineKeyboardButton(text="📅 День",       callback_data="cmd_exec:dayplan"),
+            InlineKeyboardButton(text="⏹ Стоп",       callback_data="cmd_exec:stop"),
+        ],
+        [
+            InlineKeyboardButton(text="❓ Справка",    callback_data="cmd_exec:help"),
+        ],
+    ])
+
+
+def _undo_sphere_kb() -> InlineKeyboardMarkup:
+    """Sphere picker for undo operation."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🌙 Сон",        callback_data="undo_sphere:sleep"),
+            InlineKeyboardButton(text="🍽 Питание",    callback_data="undo_sphere:nutrition"),
+            InlineKeyboardButton(text="💪 Тренировка", callback_data="undo_sphere:training"),
+        ],
+        [
+            InlineKeyboardButton(text="🇩🇪 Немецкий",  callback_data="undo_sphere:german"),
+            InlineKeyboardButton(text="🇷🇴 Румынский", callback_data="undo_sphere:romanian"),
+            InlineKeyboardButton(text="💡 Идеи",       callback_data="undo_sphere:ideas"),
+        ],
+        [
+            InlineKeyboardButton(text="📊 Контекст",   callback_data="undo_sphere:context"),
+            InlineKeyboardButton(text="🛒 Список",     callback_data="undo_sphere:wishlist"),
+        ],
+    ])
 
 
 def _cancel_kb() -> InlineKeyboardMarkup:
@@ -227,9 +299,150 @@ async def _enter_state(message: Message, state: FSMContext, btn_text: str) -> No
     await message.answer(_STATE_PROMPTS[btn_text], reply_markup=_cancel_kb())
 
 
+async def _enter_state_from_callback(callback: CallbackQuery, state: FSMContext, btn_text: str) -> None:
+    """Same as _enter_state but source is a callback — user_id from callback.from_user."""
+    cfg = _sphere_by_button(btn_text)
+    await state.set_state(cfg["state"])
+    await state.update_data(filename=cfg["file"], label=cfg["label"])
+    user_id = callback.from_user.id if callback.from_user else 0
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    _start_timeout(callback.message.bot, callback.message.chat.id, user_id, state)
+    await callback.message.answer(_STATE_PROMPTS[btn_text], reply_markup=_cancel_kb())
+    await callback.answer()
+
+
 # ── Handlers ─────────────────────────────────────────────────────────────────
 
-# 1a. Language button → show language picker inline keyboard
+# 1a. "📝 Записать →" — показывает inline picker со всеми сферами
+@log_router.message(F.text == _WRITE_BUTTON)
+async def handle_write_button(message: Message) -> None:
+    await message.answer("Выбери сферу:", reply_markup=_sphere_inline_kb())
+
+
+# 1b. "🎯 Что делать?" — выходит из любого LogState и вызывает next_step
+@log_router.message(F.text == _NEXT_BTN)
+async def handle_what_todo_btn(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    _cancel_timeout(user_id)
+    await state.clear()
+    from app.bot.handlers.message_router import _run_next_step  # lazy import
+    await _run_next_step(message, user_id)
+
+
+# 1c. Sphere picker callback → enter the selected sphere state
+@log_router.callback_query(F.data.startswith("log_sphere:"))
+async def cb_sphere_select(callback: CallbackQuery, state: FSMContext) -> None:
+    key = callback.data.split(":", 1)[1]
+    if key == "languages":
+        try:
+            await callback.message.edit_reply_markup(reply_markup=_lang_kb())
+        except Exception:
+            await callback.message.answer("Выбери язык:", reply_markup=_lang_kb())
+        await callback.answer()
+        return
+    btn_text = _KEY_TO_BTN.get(key)
+    if not btn_text:
+        await callback.answer("Неизвестная сфера.", show_alert=True)
+        return
+    await _enter_state_from_callback(callback, state, btn_text)
+
+
+# 1d. "⚙️ Команды" → inline menu с техническими командами
+@log_router.message(F.text == _CMDS_BUTTON)
+async def handle_cmds_button(message: Message) -> None:
+    await message.answer("Команды:", reply_markup=_cmds_inline_kb())
+
+
+# 1e. Команды — callback dispatch
+@log_router.callback_query(F.data.startswith("cmd_exec:"))
+async def cb_cmd_exec(callback: CallbackQuery, state: FSMContext) -> None:
+    cmd = callback.data.split(":", 1)[1]
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer()
+
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    if cmd == "pending":
+        from app.storage.db import SessionLocal
+        from app.storage.task_repo import TaskRepo
+        with SessionLocal() as session:
+            tasks = TaskRepo(session).list_recent(limit=10)
+        if not tasks:
+            await callback.message.answer("Задач пока нет.")
+        else:
+            lines = ["📋 Последние задачи:\n"]
+            for i, task in enumerate(tasks, start=1):
+                mark = "✓" if task.status == "confirmed" else " "
+                date_str = task.suggested_date or "без даты"
+                lines.append(f"{i}. {date_str} | {task.status.ljust(9)} | {mark} {task.text}")
+            await callback.message.answer("\n".join(lines))
+
+    elif cmd == "cleanup":
+        from app.storage.db import SessionLocal
+        from app.domain.task_service import TaskService
+        from app.storage.dialog_repo import DialogRepo
+        with SessionLocal() as session:
+            count_tasks = TaskService(session).cleanup_stale_pending(older_than_hours=1)
+            count_history = DialogRepo(session).purge_artifacts(user_id)
+            session.commit()
+        parts: list[str] = []
+        if count_tasks:
+            parts.append(f"{count_tasks} устаревших задач")
+        if count_history:
+            parts.append(f"{count_history} артефактов из истории")
+        await callback.message.answer(
+            f"🧹 Очищено: {', '.join(parts)}." if parts else "✅ Нечего чистить."
+        )
+
+    elif cmd == "undo":
+        await callback.message.answer("Что отменить?", reply_markup=_undo_sphere_kb())
+
+    elif cmd == "motivate":
+        from app.bot.handlers.motivation import _send_motivation
+        await _send_motivation(callback.message)
+
+    elif cmd == "dayplan":
+        from app.bot.handlers.message_router import _run_day_plan
+        await _run_day_plan(callback.message, user_id)
+
+    elif cmd == "stop":
+        _cancel_timeout(user_id)
+        await state.clear()
+        await callback.message.answer("Режим выключен.")
+
+    elif cmd == "help":
+        from app.bot.handlers.commands import _HELP_TEXT
+        await callback.message.answer(_HELP_TEXT)
+
+
+# 1f. Undo sphere callback → удалить последнюю запись в выбранной сфере
+@log_router.callback_query(F.data.startswith("undo_sphere:"))
+async def cb_undo_sphere(callback: CallbackQuery) -> None:
+    sphere_key = callback.data.split(":", 1)[1]
+    filename = _SPHERE_ARG_TO_FILE.get(sphere_key)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    if not filename:
+        await callback.answer("Неизвестная сфера.", show_alert=True)
+        return
+    ok, info = await delete_last_log_entry(filename)
+    if ok:
+        display = info.lstrip("- ").strip()
+        await callback.message.answer(f"↩ Отменено: {display}")
+    else:
+        await callback.message.answer(f"⚠️ {info}")
+    await callback.answer()
+
+
+# 1g. Language button (text) → show language picker (backward compat / manual input)
 @log_router.message(F.text == _LANG_BUTTON)
 async def handle_lang_button(message: Message) -> None:
     await message.answer("Выбери язык:", reply_markup=_lang_kb())
@@ -311,7 +524,7 @@ async def cb_done_log(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await callback.message.answer(f"✅ {label} записан." if label else "Готово.")
+    await callback.message.answer(f"✅ Записано в «{label}»." if label else "Готово.")
     await callback.answer()
 
 

@@ -122,7 +122,33 @@ async def _send_motivation(message: Message, category_key: str | None = None) ->
     if not text:
         text = "Вставай и делай. Версия себя через 5 лет скажет спасибо — или нет."
 
-    await message.answer(f"💢 {text}")
+    kick = f"💢 {text}"
+    await message.answer(kick)
+
+    # Сразу даём конкретный следующий шаг — чтобы не было "ок, а что именно делать?"
+    user_id = message.from_user.id if message.from_user else 0
+    step_text = ""
+    try:
+        from app.config import settings as _s
+        from app.storage.db import SessionLocal
+        from app.domain.next_step import suggest_next_step
+        with SessionLocal() as _sess:
+            step_text = await suggest_next_step(_sess, user_id)
+        await message.answer(f"🎯 {step_text}")
+    except Exception as exc:
+        logger.warning("next_step after motivate failed: %s", exc)
+
+    # Сохраняем в dialog history чтобы follow-up имел контекст
+    try:
+        from app.storage.db import SessionLocal
+        from app.storage.dialog_repo import DialogRepo
+        full_reply = kick + (f"\n\n🎯 {step_text}" if step_text else "")
+        with SessionLocal() as _hist:
+            repo = DialogRepo(_hist)
+            repo.append(user_id, "assistant", full_reply)
+            _hist.commit()
+    except Exception as exc:
+        logger.warning("motivation dialog history write failed: %s", exc)
 
 
 @motivation_router.message(Command("motivate", "мотивируй", "motivate"))

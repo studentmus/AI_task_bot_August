@@ -64,11 +64,11 @@ PROTEIN_LOW    = 150   # порог «мало» (75% от цели)
 
 def check_nutrition(session: Session, user_id: int) -> list[Alert]:
     tz = ZoneInfo(settings.task_timezone)
-    today = _today(tz)
     alerts: list[Alert] = []
 
-    # Check last 3 days for protein
     daily_protein: dict[str, float] = {}
+    daily_has_entries: dict[str, bool] = {}
+
     for d in range(3):
         day = _days_back(tz, d)
         since = day + " 00:00"
@@ -85,10 +85,11 @@ def check_nutrition(session: Session, user_id: int) -> list[Alert]:
         )
         total = sum((_structured(e).get("protein_g") or 0) for e in entries)
         daily_protein[day] = total
+        daily_has_entries[day] = len(entries) > 0
 
-    days_with_data = {d: p for d, p in daily_protein.items() if p > 0}
     low_days = [d for d, p in daily_protein.items() if 0 < p < PROTEIN_LOW]
-    zero_days = [d for d, p in daily_protein.items() if p == 0]
+    # "Нет лога" только если записей вообще нет — не путать с NULL structured_data
+    no_log_days = [d for d, p in daily_protein.items() if p == 0 and not daily_has_entries[d]]
 
     if len(low_days) >= 2:
         avg = int(sum(daily_protein[d] for d in low_days) / len(low_days))
@@ -104,10 +105,10 @@ def check_nutrition(session: Session, user_id: int) -> list[Alert]:
             summary=f"Сегодня белка мало: {avg}г (цель {PROTEIN_TARGET}г).",
         ))
 
-    if len(zero_days) >= 2:
+    if len(no_log_days) >= 2:
         alerts.append(Alert(
             sphere="nutrition", severity="warning", key="nutrition_no_log_2d",
-            summary=f"Питание не логировалось {len(zero_days)} дня подряд.",
+            summary=f"Питание не логировалось {len(no_log_days)} дня подряд.",
         ))
 
     return alerts

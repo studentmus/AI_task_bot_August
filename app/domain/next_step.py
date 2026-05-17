@@ -43,14 +43,42 @@ def _is_late_night(now: datetime) -> bool:
 _SYSTEM_PROMPT = """\
 Ты личный AI-коуч. Твоя задача — дать ОДИН конкретный следующий шаг.
 
-Правила:
+ПРИНЦИПЫ ИВАНА (всегда применять):
+- Иван всегда должен учиться и двигаться вперёд.
+- Отдых легитимен ТОЛЬКО если он целенаправленный (восстановление ради энергии).
+- Лень ≠ отдых. "Просто полежать", скроллинг — не рекомендации.
+
+ПРАВИЛА:
 - Ровно одно действие, не список.
 - Конкретное: не «займись румынским», а «открой Duolingo — сделай один урок (10 мин)».
-- Учитывай доступное время: если окно < 20 мин — только короткое; > 60 мин — можно серьёзное.
-- Используй Energy Matrix из контекста: подбирай активность под уровень энергии и тип последней нагрузки.
+- Учитывай доступное время: окно < 20 мин → только короткое; > 60 мин → можно серьёзное.
+- Используй Energy Matrix: подбирай активность под уровень энергии и тип последней нагрузки.
 - Соблюдай Planning Principles и Frequency Constraints из матрицы.
-- Приоритет: красные алёрты > якоря дня (тренировка, тьютор) > задачи с дедлайном > Priority Weights из матрицы.
-- Ответ: 2-3 предложения. Без вступлений, без заголовков.\
+- Приоритет: красные алёрты > якоря дня > задачи с дедлайном > Priority Weights.
+- Проверь Project Files: нет Next Actions → 15-мин сессия планирования ("Открой project_X.md").
+- Если в Next Actions есть [ ] пункты → предлагай первый незакрытый.
+- Энергия неизвестна → Medium рекомендация + в конце: "Оцени энергию 1-10 — дам точнее."
+
+ВОССТАНОВЛЕНИЕ (энергия ≤ 3) — иерархия по "Ещё не было сегодня":
+1. Сон (slept=False) → вздремни 20 мин или ляг раньше
+2. Еда (ate=False) → поешь нормально прямо сейчас
+3. Прогулка (walked=False или нет training-записи с "прогулк"/"walk") → 20–30 мин на воздухе
+4. Всё выше есть → 15–20 мин гитары / лёгкое чтение / музыка без экрана
+5. В конце: "Договорились? Скажи как самочувствие через полчаса."
+
+ОТВЕТ: 2-3 предложения. Без вступлений, без заголовков.\
+"""
+
+_DAY_PLAN_SYSTEM = """\
+Ты личный планировщик. Составь план оставшегося дня по временным блокам.
+Учитывай: текущее время, энергию, что уже сделано сегодня, задачи с дедлайнами,
+проекты с незакрытыми Next Actions, свободные окна в календаре.
+Принципы Ивана: всегда учиться/двигаться; отдых только целенаправленный.
+Формат:
+  HH:MM — Активность (продолжительность)
+  HH:MM — ...
+  Вечер — лёгкое завершение дня (если энергия упадёт)
+Заверши одной строкой: "Такой план устраивает? Могу скорректировать."\
 """
 
 
@@ -72,13 +100,47 @@ def _compute_free_window(cal_events, now: datetime) -> tuple[int, str | None]:
     return 240, None
 
 
+def _get_today_activity(session: Session, user_id: int) -> dict[str, bool]:
+    """Какие сферы имеют записи СЕГОДНЯ в log_entries."""
+    from app.storage.log_repo import LogRepo
+    tz = ZoneInfo(settings.task_timezone)
+    today = datetime.now(tz=tz).strftime("%Y-%m-%d")
+    entries = LogRepo(session).get_recent(user_id, days=1, limit=100)
+    today_entries = [e for e in entries if e.logged_at.startswith(today)]
+    spheres = {e.sphere for e in today_entries}
+    training_entries = [e for e in today_entries if e.sphere == "training"]
+    walked = any(
+        "прогулк" in e.raw_text.lower() or "walk" in e.raw_text.lower()
+        for e in training_entries
+    )
+    return {
+        "trained":  "training"  in spheres,
+        "slept":    "sleep"     in spheres,
+        "ate":      "nutrition" in spheres,
+        "german":   "german"    in spheres,
+        "romanian": "romanian"  in spheres,
+        "walked":   walked,
+    }
+
+
+_ACTIVITY_LABELS: list[tuple[str, str]] = [
+    ("slept",    "сон"),
+    ("ate",      "питание"),
+    ("trained",  "тренировка"),
+    ("german",   "немецкий"),
+    ("romanian", "румынский"),
+]
+
+
 def _build_context_prompt(ctx: dict) -> str:
     lines = [
         f"Текущий момент: {ctx['now_str']}",
     ]
 
     # Energy
-    if ctx["energy"] is not None:
+    if ctx["energy"] is None:
+        lines.append("Энергия: неизвестна (спроси пользователя оценить 1-10 в конце ответа)")
+    else:
         src = {"explicit": "пинг", "inferred": "инференс по сну"}.get(ctx["energy_source"], "")
         e_str = f"{ctx['energy']}/10 — {ctx['energy_label']}"
         if src:
@@ -87,8 +149,6 @@ def _build_context_prompt(ctx: dict) -> str:
             h, m = divmod(ctx["sleep_min"], 60)
             e_str += f"; сон {h}ч {m}м"
         lines.append(f"Энергия: {e_str}")
-    else:
-        lines.append("Энергия: неизвестна")
 
     # Free window
     fw = ctx["free_window_min"]
@@ -116,11 +176,29 @@ def _build_context_prompt(ctx: dict) -> str:
         if len(ctx["backlog"]) > 3:
             lines.append(f"  … ещё {len(ctx['backlog']) - 3}")
 
+    # Today's activity
+    act = ctx.get("today_activity")
+    if act is not None:
+        done = [lbl for key, lbl in _ACTIVITY_LABELS if act.get(key)]
+        if act.get("walked") and "тренировка" not in done:
+            done.append("прогулка")
+        not_done = [lbl for key, lbl in _ACTIVITY_LABELS if not act.get(key)]
+        lines.append(f"Сделано сегодня: {', '.join(done) if done else 'ничего'}")
+        if not_done:
+            lines.append(f"Ещё не было сегодня: {', '.join(not_done)}")
+        if act.get("trained") and not act.get("walked"):
+            lines.append("  (тренировка была, но прогулки не было)")
+
     # Alerts
     if ctx["alerts"]:
         lines.append("Активные алёрты (красные):")
         for a in ctx["alerts"]:
             lines.append(f"  ⚠️ {a}")
+
+    # Project Files
+    projects = ctx.get("project_context", "")
+    if projects:
+        lines.append(f"\n--- Project Files ---\n{projects}\n--- End Projects ---")
 
     # Energy Matrix
     matrix = ctx.get("energy_matrix", "")
@@ -161,8 +239,11 @@ async def _gather_context(session: Session, user_id: int) -> dict:
 
     free_window_min, next_event_str = _compute_free_window(cal_events, now)
     energy_matrix = read_energy_matrix_sync()
+    from app.llm.obsidian_tools import read_project_files_sync
+    project_context = read_project_files_sync()
     backlog = TaskRepo(session).get_backlog_tasks(user_id, limit=5)
     backlog_lines = [f"• id={t.id} {t.text}" for t in backlog]
+    today_activity = _get_today_activity(session, user_id)
 
     return {
         "now_str": now_str,
@@ -176,20 +257,26 @@ async def _gather_context(session: Session, user_id: int) -> dict:
         "free_window_min": free_window_min,
         "next_event_str": next_event_str,
         "energy_matrix": energy_matrix,
+        "project_context": project_context,
+        "today_activity": today_activity,
     }
 
 
-def _call_llm(user_prompt: str) -> str | None:
+def _call_llm_with_system(system: str, user_prompt: str) -> str | None:
     try:
         from app.llm.deepseek_client import call_deepseek_chat
         msg = call_deepseek_chat(messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": system},
             {"role": "user",   "content": user_prompt},
         ])
         return (msg.get("content") or "").strip() or None
     except Exception as exc:
         logger.error("next_step LLM call failed: %s", exc)
         return None
+
+
+def _call_llm(user_prompt: str) -> str | None:
+    return _call_llm_with_system(_SYSTEM_PROMPT, user_prompt)
 
 
 async def suggest_next_step(session: Session, user_id: int) -> str:
@@ -212,6 +299,14 @@ async def suggest_next_step(session: Session, user_id: int) -> str:
         return "Похоже, сейчас нет срочных дел. Хорошее время для языков или отдыха."
 
     return text
+
+
+async def suggest_day_plan(session: Session, user_id: int) -> str:
+    """Return a full day plan as a formatted string."""
+    ctx = await _gather_context(session, user_id)
+    prompt = _build_context_prompt(ctx)
+    text = await asyncio.to_thread(_call_llm_with_system, _DAY_PLAN_SYSTEM, prompt)
+    return text or "Не смог составить план. Попробуй позже."
 
 
 async def suggest_light_activity(session: Session, user_id: int) -> str:
