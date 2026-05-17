@@ -103,6 +103,20 @@ class TaskRepo:
             .all()
         )
 
+    def get_today_done(self, user_id: int, today: Optional[str] = None) -> list[Task]:
+        """Выполненные задачи на указанную дату (для summary в day view)."""
+        today_str = today or date.today().isoformat()
+        return (
+            self._s.query(Task)
+            .filter(
+                Task.telegram_user_id == user_id,
+                Task.suggested_date == today_str,
+                Task.status == "done",
+            )
+            .order_by(Task.event_time.asc().nulls_last(), Task.id.asc())
+            .all()
+        )
+
     def get_active_task(self, user_id: int) -> Optional[Task]:
         """Последняя незавершённая задача пользователя."""
         return (

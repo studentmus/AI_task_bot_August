@@ -76,13 +76,15 @@ async def cmd_cleanup(message: Message) -> None:
     with SessionLocal() as session:
         from app.domain.task_service import TaskService
         from app.storage.dialog_repo import DialogRepo
-        count_tasks = TaskService(session).cleanup_stale_pending(older_than_hours=1)
+        svc = TaskService(session)
+        count_tasks = svc.cleanup_stale_pending(older_than_hours=1)
+        count_phantoms = svc.cleanup_query_phantoms(user_id)
         count_history = DialogRepo(session).purge_artifacts(user_id)
         session.commit()
 
     parts: list[str] = []
-    if count_tasks:
-        parts.append(f"{count_tasks} устаревших задач")
+    if count_tasks + count_phantoms:
+        parts.append(f"{count_tasks + count_phantoms} устаревших/phantom задач")
     if count_history:
         parts.append(f"{count_history} артефактов из истории диалога")
     if parts:

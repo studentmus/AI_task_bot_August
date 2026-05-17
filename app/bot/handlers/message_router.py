@@ -678,17 +678,21 @@ async def _run_day_view(message: Message, user_id: int, when: str) -> None:
     header = ("Сегодня" if target == today else "Завтра") + f", {day_label}:"
 
     with SessionLocal() as session:
-        tasks = TaskRepo(session).get_today_all(user_id, today=target_str)
+        repo = TaskRepo(session)
+        tasks = repo.get_today_plan(user_id, today=target_str)      # pending+confirmed
+        done_tasks = repo.get_today_done(user_id, today=target_str)  # done only
 
-    if not tasks:
+    if not tasks and not done_tasks:
         await message.answer(f"{header}\nЗадач нет.")
         return
 
     lines = [header]
     for t in tasks:
-        prefix = "✅" if t.status == "done" else "•"
         time_str = f"{t.event_time} — " if (t.event_time and not t.all_day) else ""
-        lines.append(f"{prefix} {time_str}{t.text}")
+        lines.append(f"• {time_str}{t.text}")
+    if done_tasks:
+        names = ", ".join(t.text for t in done_tasks)
+        lines.append(f"\n✅ Выполнено: {names}")
     await message.answer("\n".join(lines))
 
 

@@ -52,6 +52,27 @@ class TaskService:
         logger.info("Stale cleanup: %d tasks cancelled (older_than=%dh)", count, older_than_hours)
         return count
 
+    def cleanup_query_phantoms(self, user_id: int) -> int:
+        """Отменяет задачи чей текст выглядит как запрос (создались из view-фраз)."""
+        from app.storage.db import Task
+        _QUERY_STARTS = ("что ", "покажи ", "план ", "что у ", "есть ли ", "какие ", "что на ")
+        tasks = (
+            self._session.query(Task)
+            .filter(
+                Task.telegram_user_id == user_id,
+                Task.status.in_(["pending", "confirmed"]),
+            )
+            .all()
+        )
+        count = 0
+        for task in tasks:
+            if any(task.text.lower().startswith(p) for p in _QUERY_STARTS):
+                task.status = "cancelled"
+                count += 1
+        if count:
+            self._session.commit()
+        return count
+
     def confirm_and_sync(self, task_id: int) -> Optional[str]:
         """Подтверждает задачу и синхронизирует с Google Calendar.
         Sync выполняется здесь, а не при create_task, чтобы дата/время были финальными."""
