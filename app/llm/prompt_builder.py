@@ -236,6 +236,18 @@ def build_memory_context(session: "Session", user_id: int) -> str:
     return MemoryService(session).format_for_context(user_id)
 
 
+def build_backlog(session: "Session", user_id: int) -> str:
+    """Задачи без даты — бэклог. LLM может предложить их в свободное время."""
+    from app.storage.task_repo import TaskRepo
+    backlog = TaskRepo(session).get_backlog_tasks(user_id, limit=10)
+    if not backlog:
+        return ""
+    lines = ["Бэклог (задачи без даты — предлагай в свободное время):"]
+    for t in backlog:
+        lines.append(f"  • id={t.id} {t.text}")
+    return "\n".join(lines)
+
+
 def build_done_history(session: "Session", user_id: int) -> str:
     """Последние выполненные задачи — LLM может удалить их по id."""
     from app.storage.task_repo import TaskRepo
@@ -302,6 +314,10 @@ def build_messages(session: "Session", user_id: int, user_text: str) -> list[dic
     done_history = build_done_history(session, user_id)
     if done_history:
         parts.append(done_history)
+
+    backlog = build_backlog(session, user_id)
+    if backlog:
+        parts.append(backlog)
 
     return [
         {"role": "system", "content": "\n\n".join(parts)},

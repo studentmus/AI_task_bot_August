@@ -107,6 +107,16 @@ _READ_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Пассивный детектор отказа от важного дела (тренировка, учёба).
+# Срабатывает только если энергия >= 5 → мотивационный пинок.
+_TRAINING_REFUSAL_RE = re.compile(
+    r"\bне\s+(?:хочу|буду|пойду)\s+(?:идти\s+в\s+)?(?:зал|тренироваться|на\s+тренировку)\b"
+    r"|\bпропущу\s+тренировку\b"
+    r"|\bлень\s+(?:идти\s+в\s+зал|тренироваться)\b"
+    r"|\bсегодня\s+без\s+зала\b",
+    re.IGNORECASE,
+)
+
 # Гарда «не спится»: логирует факт + даёт лёгкую рекомендацию.
 # Проверяется ДО _NEXT_STEP_RE чтобы не уйти в обычный next-step с late-night gate.
 _CANT_SLEEP_RE = re.compile(
@@ -343,6 +353,18 @@ async def dispatch_text(message: Message) -> None:
     raw = message.text.strip()
     user_id = message.from_user.id if message.from_user else 0
     lower = raw.lower()
+
+    # ── 0. ОТКАЗ ОТ ТРЕНИРОВКИ при нормальной энергии → мотивационный пинок ──
+    if _TRAINING_REFUSAL_RE.search(lower):
+        with SessionLocal() as _rs:
+            from app.domain.state import get_current_state
+            _state_obj = get_current_state(_rs, user_id)
+        if _state_obj.energy is not None and _state_obj.energy >= 5:
+            logger.info("Training refusal + energy=%s → motivation for %r", _state_obj.energy, raw)
+            from app.bot.handlers.motivation import _send_motivation
+            await _send_motivation(message, "зал")
+            return
+        # energy unknown or low → fall through to normal LLM
 
     # ── 0. НЕ СПИТСЯ — лог + лёгкая рекомендация (раньше next-step чтобы обойти late-night gate)
     if _CANT_SLEEP_RE.search(lower):

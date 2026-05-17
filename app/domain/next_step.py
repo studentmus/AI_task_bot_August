@@ -47,8 +47,9 @@ _SYSTEM_PROMPT = """\
 - Ровно одно действие, не список.
 - Конкретное: не «займись румынским», а «открой Duolingo — сделай один урок (10 мин)».
 - Учитывай доступное время: если окно < 20 мин — только короткое; > 60 мин — можно серьёзное.
-- Учитывай энергию: при ≤4 — только лёгкое (язык, прогулка); при ≥8 — можно demanding.
-- Приоритет: красные алёрты > задачи с дедлайном сегодня > языки > всё остальное.
+- Используй Energy Matrix из контекста: подбирай активность под уровень энергии и тип последней нагрузки.
+- Соблюдай Planning Principles и Frequency Constraints из матрицы.
+- Приоритет: красные алёрты > якоря дня (тренировка, тьютор) > задачи с дедлайном > Priority Weights из матрицы.
 - Ответ: 2-3 предложения. Без вступлений, без заголовков.\
 """
 
@@ -107,11 +108,24 @@ def _build_context_prompt(ctx: dict) -> str:
     else:
         lines.append("Задачи на сегодня: нет")
 
+    # Backlog
+    if ctx.get("backlog"):
+        lines.append(f"Бэклог (без даты, {len(ctx['backlog'])} шт.) — если есть свободное окно:")
+        for b in ctx["backlog"][:3]:
+            lines.append(f"  {b}")
+        if len(ctx["backlog"]) > 3:
+            lines.append(f"  … ещё {len(ctx['backlog']) - 3}")
+
     # Alerts
     if ctx["alerts"]:
         lines.append("Активные алёрты (красные):")
         for a in ctx["alerts"]:
             lines.append(f"  ⚠️ {a}")
+
+    # Energy Matrix
+    matrix = ctx.get("energy_matrix", "")
+    if matrix:
+        lines.append(f"\n--- Energy Matrix ---\n{matrix}\n--- End Matrix ---")
 
     lines.append(
         "\nВыбери ОДИН следующий шаг с учётом всего выше. "
@@ -123,6 +137,7 @@ def _build_context_prompt(ctx: dict) -> str:
 async def _gather_context(session: Session, user_id: int) -> dict:
     from app.domain.alert_rules import run_all_checks
     from app.domain.state import get_current_state
+    from app.llm.obsidian_tools import read_energy_matrix_sync
     from app.storage.task_repo import TaskRepo
 
     tz = ZoneInfo(settings.task_timezone)
@@ -145,6 +160,9 @@ async def _gather_context(session: Session, user_id: int) -> dict:
         logger.warning("next_step: GCal fetch failed: %s", exc)
 
     free_window_min, next_event_str = _compute_free_window(cal_events, now)
+    energy_matrix = read_energy_matrix_sync()
+    backlog = TaskRepo(session).get_backlog_tasks(user_id, limit=5)
+    backlog_lines = [f"• id={t.id} {t.text}" for t in backlog]
 
     return {
         "now_str": now_str,
@@ -153,9 +171,11 @@ async def _gather_context(session: Session, user_id: int) -> dict:
         "energy_source": state.energy_source,
         "sleep_min": state.sleep_min,
         "tasks": task_lines,
+        "backlog": backlog_lines,
         "alerts": [a.summary for a in alerts],
         "free_window_min": free_window_min,
         "next_event_str": next_event_str,
+        "energy_matrix": energy_matrix,
     }
 
 

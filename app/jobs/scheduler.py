@@ -110,6 +110,7 @@ def _register_protocol_pings(
 
 def start_scheduler(bot: Bot, storage: BaseStorage) -> AsyncIOScheduler:
     from app.jobs.alert_checker import check_proactive_alerts
+    from app.jobs.backlog_nudge import send_backlog_nudge
     from app.jobs.due_pings import check_due_items
     from app.jobs.evening_review import send_evening_review
     from app.jobs.morning_plan import send_morning_plan
@@ -151,6 +152,14 @@ def start_scheduler(bot: Bot, storage: BaseStorage) -> AsyncIOScheduler:
         trigger=CronTrigger(hour=21, minute=0, timezone=settings.task_timezone),
         args=[bot],
         id="evening_review",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        send_backlog_nudge,
+        trigger=CronTrigger(hour=14, minute=0, timezone=settings.task_timezone),
+        args=[bot],
+        id="backlog_nudge",
         replace_existing=True,
     )
 

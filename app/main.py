@@ -10,6 +10,7 @@ from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, TelegramOb
 from app.bot.handlers.log_handler import log_router
 from app.bot.handlers.memory import memory_router
 from app.bot.handlers.message_router import main_router
+from app.bot.handlers.motivation import motivation_router
 from app.config import settings
 from app.jobs.scheduler import start_scheduler
 from app.storage.db import init_db
@@ -39,20 +40,22 @@ class AllowedUserMiddleware(BaseMiddleware):
 async def _set_commands(bot: Bot) -> None:
     commands = [
         # ── Логирование ──────────────────────────────────────────────────
-        BotCommand(command="sleep",   description="🌙 Записать сон (23:30-7:00, с полуночи до 8...)"),
-        BotCommand(command="meal",    description="🍽 Записать питание"),
-        BotCommand(command="workout", description="💪 Записать тренировку"),
-        BotCommand(command="german",  description="📖 Записать немецкий"),
-        BotCommand(command="ideas",   description="💡 Записать идею"),
-        BotCommand(command="ctx",     description="📊 Записать контекст / личную заметку"),
-        BotCommand(command="stop",    description="⏹ Выйти из режима логирования"),
-        BotCommand(command="undo",    description="↩ Отменить последнюю запись (/undo sleep)"),
+        BotCommand(command="sleep",    description="🌙 Записать сон (23:30-7:00, с полуночи до 8...)"),
+        BotCommand(command="meal",     description="🍽 Записать питание"),
+        BotCommand(command="workout",  description="💪 Записать тренировку"),
+        BotCommand(command="german",   description="🇩🇪 Записать немецкий (/de)"),
+        BotCommand(command="romanian", description="🇷🇴 Записать румынский (/ro)"),
+        BotCommand(command="ideas",    description="💡 Записать идею"),
+        BotCommand(command="ctx",      description="📊 Записать личную заметку"),
+        BotCommand(command="wish",     description="🛒 Записать в список покупок"),
+        BotCommand(command="stop",     description="⏹ Выйти из режима логирования"),
+        BotCommand(command="undo",     description="↩ Отменить последнюю запись (/undo sleep)"),
         # ── Задачи ───────────────────────────────────────────────────────
-        BotCommand(command="pending", description="📋 Последние задачи в базе"),
-        BotCommand(command="cleanup", description="🧹 Очистить мусорные задачи"),
-        BotCommand(command="cancel",  description="✖ Отменить текущий ввод"),
-        # ── Общее ────────────────────────────────────────────────────────
-        BotCommand(command="start",   description="🤖 Справка и список команд"),
+        BotCommand(command="pending",  description="📋 Последние задачи в базе"),
+        BotCommand(command="cleanup",  description="🧹 Очистить мусорные задачи"),
+        # ── Инструменты ──────────────────────────────────────────────────
+        BotCommand(command="motivate", description="💢 Мотивационный пинок (/motivate зал)"),
+        BotCommand(command="start",    description="🤖 Справка и список команд"),
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
     logger.info("Bot commands registered (%d)", len(commands))
@@ -128,8 +131,9 @@ async def main() -> None:
 
     dp = Dispatcher(storage=storage)
     dp.update.outer_middleware(AllowedUserMiddleware())
-    dp.include_router(memory_router)  # FSM ping handler — must be first
-    dp.include_router(log_router)     # FSM log handler — before NLP router
+    dp.include_router(memory_router)     # FSM ping handler — must be first
+    dp.include_router(log_router)        # FSM log handler — before NLP router
+    dp.include_router(motivation_router) # /motivate command
     dp.include_router(main_router)
 
     await _set_commands(bot)

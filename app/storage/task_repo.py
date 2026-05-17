@@ -29,7 +29,7 @@ class TaskRepo:
     def insert_pending(
         self,
         text: str,
-        date: str,
+        date: Optional[str],
         event_time: Optional[str],
         all_day: bool,
         user_id: int,
@@ -38,7 +38,7 @@ class TaskRepo:
             text=text,
             category="inbox",
             importance="medium",
-            suggested_date=_normalize_date(date),
+            suggested_date=_normalize_date(date) if date else None,
             event_time=event_time,
             all_day=all_day,
             status="pending",
@@ -112,6 +112,20 @@ class TaskRepo:
                 Task.status.notin_(["done", "cancelled"]),
             )
             .order_by(Task.suggested_date.asc(), Task.event_time.asc().nulls_last(), Task.id.asc())
+            .limit(limit)
+            .all()
+        )
+
+    def get_backlog_tasks(self, user_id: int, limit: int = 10) -> list[Task]:
+        """Задачи без даты (бэклог) — предлагаются в свободное время."""
+        return (
+            self._s.query(Task)
+            .filter(
+                Task.telegram_user_id == user_id,
+                Task.suggested_date.is_(None),
+                Task.status.in_(["pending", "confirmed"]),
+            )
+            .order_by(Task.id.asc())
             .limit(limit)
             .all()
         )

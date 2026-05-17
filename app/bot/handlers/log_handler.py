@@ -4,6 +4,7 @@ FSM-based deterministic logging handler.
 Flow:
   Button / slash cmd → FSM state set → any next text → direct file write (no LLM)
   Stop word or new button → exit / switch state
+  Auto-exit after 60 seconds of inactivity.
 
 Slash commands:
   /sleep [text]   — log sleep entry (flexible time parsing)
@@ -16,6 +17,7 @@ Slash commands:
   /undo [sphere]  — delete last entry in active or named sphere
 """
 
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -50,7 +52,7 @@ LOG_KEYBOARD = ReplyKeyboardMarkup(
             KeyboardButton(text="💪 Тренировка"),
         ],
         [
-            KeyboardButton(text="📖 Немецкий"),
+            KeyboardButton(text="🌍 Языки"),
             KeyboardButton(text="💡 Идеи"),
             KeyboardButton(text="📊 Контекст"),
         ],
@@ -59,6 +61,8 @@ LOG_KEYBOARD = ReplyKeyboardMarkup(
     is_persistent=True,
 )
 
+_LANG_BUTTON = "🌍 Языки"
+
 # ── Sphere config ────────────────────────────────────────────────────────────
 
 _SPHERES: dict[str, dict] = {
@@ -66,19 +70,24 @@ _SPHERES: dict[str, dict] = {
     "🍽 Питание":    {"state": LogState.nutrition,  "file": "nutrition.md",    "label": "Питание"},
     "💪 Тренировка": {"state": LogState.training,   "file": "training.md",     "label": "Тренировка"},
     "📖 Немецкий":   {"state": LogState.german,     "file": "german.md",       "label": "Немецкий"},
+    "🇷🇴 Румынский": {"state": LogState.romanian,   "file": "romanian.md",     "label": "Румынский"},
     "💡 Идеи":       {"state": LogState.ideas,      "file": "ideas.md",        "label": "Идеи"},
     "📊 Контекст":   {"state": LogState.context,    "file": "ivan_context.md", "label": "Контекст"},
+    "🛒 Список":     {"state": LogState.wishlist,   "file": "wishlist.md",     "label": "Список покупок"},
 }
 
-_BUTTON_TEXTS = set(_SPHERES.keys())
+# Кнопки reply-keyboard (не включают языки — они в подменю)
+_BUTTON_TEXTS = {"🌙 Сон", "🍽 Питание", "💪 Тренировка", "💡 Идеи", "📊 Контекст"}
 
 _STATE_PROMPTS = {
     "🌙 Сон":        "🌙 Режим: Сон.\nПиши время и заметки, например:\n  23:30–7:00\n  с полуночи до восьми\n  12–8, спал отлично",
     "🍽 Питание":    "🍽 Режим: Питание. Что ел/пил?",
     "💪 Тренировка": "💪 Режим: Тренировка. Что делал?",
     "📖 Немецкий":   "📖 Режим: Немецкий. Что учил?",
+    "🇷🇴 Румынский": "🇷🇴 Режим: Румынский. Что учил?",
     "💡 Идеи":       "💡 Режим: Идеи. Пиши:",
     "📊 Контекст":   "📊 Режим: Контекст. Что зафиксировать?",
+    "🛒 Список":     "🛒 Режим: Список покупок.\nПиши что хочешь купить, можно с категорией:\n  [Техника] AirPods Pro\n  [Быт] фильтр для воды\n  [Одежда] кроссовки Nike",
 }
 
 # ── Stop pattern ─────────────────────────────────────────────────────────────
@@ -97,7 +106,9 @@ _LOG_ESCAPE_RE = re.compile(
     r"|\bв\s+(?:понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье)\b"
     r"|\bчерез\s+\d+\s+(?:день|дня|дней|час|часа|часов|неделю|недели)\b"
     r"|\b(?:скинь|пришли|объясни|расскажи|помоги|найди|переведи|напомни)\b"
-    r"|\bсоздай\s+задачу\b|\bпоставь\s+задачу\b|\bдобавь\s+в\s+календарь\b",
+    r"|\bсоздай\s+задачу\b|\bпоставь\s+задачу\b|\bдобавь\s+в\s+календарь\b"
+    r"|\bчто\s+(?:мне\s+)?(?:сейчас\s+)?(?:делать|сделать|нужно|дальше)\b"
+    r"|\bследующий\s+шаг\b",
     re.IGNORECASE,
 )
 
@@ -108,16 +119,357 @@ _SPHERE_ARG_TO_FILE: dict[str, str] = {
     "meal": "nutrition.md",    "nutrition": "nutrition.md",   "питание": "nutrition.md",
     "workout": "training.md",  "training": "training.md",     "тренировка": "training.md",
     "german": "german.md",     "немецкий": "german.md",       "de": "german.md",
+    "romanian": "romanian.md", "румынский": "romanian.md",    "ro": "romanian.md",
     "ideas": "ideas.md",       "идеи": "ideas.md",            "idea": "ideas.md",
     "ctx": "ivan_context.md",  "context": "ivan_context.md",  "контекст": "ivan_context.md",
     "health": "health.md",     "здоровье": "health.md",
+    "wish": "wishlist.md",     "wishlist": "wishlist.md",     "список": "wishlist.md",
 }
 
+# ── Auto-exit timeout ─────────────────────────────────────────────────────────
 
-def _undo_kb(filename: str) -> InlineKeyboardMarkup:
+_TIMEOUT_SECS = 60
+_timeout_tasks: dict[int, asyncio.Task] = {}
+
+
+def _cancel_timeout(user_id: int) -> None:
+    task = _timeout_tasks.pop(user_id, None)
+    if task:
+        task.cancel()
+
+
+async def _auto_exit(bot, chat_id: int, user_id: int, state: FSMContext) -> None:
+    await asyncio.sleep(_TIMEOUT_SECS)
+    current = await state.get_state()
+    if not (current and "LogState" in str(current)):
+        return
+    data = await state.get_data()
+    label = data.get("label", "")
+    await state.clear()
+    _timeout_tasks.pop(user_id, None)
+    note = f" ({label})" if label else ""
+    try:
+        await bot.send_message(chat_id, f"⏱ Режим{note} завершён — нет активности 1 минуту.")
+    except Exception:
+        pass
+
+
+def _start_timeout(bot, chat_id: int, user_id: int, state: FSMContext) -> None:
+    _cancel_timeout(user_id)
+    _timeout_tasks[user_id] = asyncio.create_task(
+        _auto_exit(bot, chat_id, user_id, state)
+    )
+
+
+# ── Inline keyboards ──────────────────────────────────────────────────────────
+
+def _lang_kb() -> InlineKeyboardMarkup:
+    """Language picker shown when '🌍 Языки' button is pressed."""
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="↩ Отменить", callback_data=f"undo_log:{filename}"),
+        InlineKeyboardButton(text="🇩🇪 Немецкий", callback_data="lang:german"),
+        InlineKeyboardButton(text="🇷🇴 Румынский", callback_data="lang:romanian"),
     ]])
+
+
+def _cancel_kb() -> InlineKeyboardMarkup:
+    """Shown when entering a mode — before any entry is made."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✗ Отмена", callback_data="cancel_log"),
+    ]])
+
+
+def _entry_kb(filename: str) -> InlineKeyboardMarkup:
+    """Shown after each log entry: done / write more / undo last."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Готово", callback_data="done_log"),
+            InlineKeyboardButton(text="📝 Ещё", callback_data="more_log"),
+        ],
+        [
+            InlineKeyboardButton(text="↩ Отменить", callback_data=f"undo_log:{filename}"),
+        ],
+    ])
+
+
+# ── File auto-create ─────────────────────────────────────────────────────────
+
+async def _ensure_log_file(filename: str) -> None:
+    """Create _bot/{filename} with minimal header if it doesn't exist."""
+    path = Path(settings.obsidian_vault_path) / "_bot" / filename
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        sphere_name = filename.replace(".md", "").replace("_", " ").capitalize()
+        path.write_text(f"# {sphere_name}\n\n## Log\n", encoding="utf-8")
+        logger.info("Auto-created log file: %s", path)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _sphere_by_button(btn: str) -> dict:
+    return _SPHERES[btn]
+
+
+async def _write_entry(filename: str, text: str) -> tuple[bool, str]:
+    """Write formatted entry to file. Returns (ok, message)."""
+    await _ensure_log_file(filename)
+    entry = _format_entry(filename, text)
+    result = await append_to_bot_log(filename, entry)
+    ok = not (result.startswith("Ошибка") or result.startswith("Файл"))
+    return ok, entry
+
+
+async def _enter_state(message: Message, state: FSMContext, btn_text: str) -> None:
+    cfg = _sphere_by_button(btn_text)
+    await state.set_state(cfg["state"])
+    await state.update_data(filename=cfg["file"], label=cfg["label"])
+    user_id = message.from_user.id if message.from_user else 0
+    _start_timeout(message.bot, message.chat.id, user_id, state)
+    await message.answer(_STATE_PROMPTS[btn_text], reply_markup=_cancel_kb())
+
+
+# ── Handlers ─────────────────────────────────────────────────────────────────
+
+# 1a. Language button → show language picker inline keyboard
+@log_router.message(F.text == _LANG_BUTTON)
+async def handle_lang_button(message: Message) -> None:
+    await message.answer("Выбери язык:", reply_markup=_lang_kb())
+
+
+# 1b. Language picker callback → enter the selected language state
+@log_router.callback_query(F.data.startswith("lang:"))
+async def cb_lang_select(callback: CallbackQuery, state: FSMContext) -> None:
+    lang = callback.data.split(":", 1)[1]
+    btn_text = "📖 Немецкий" if lang == "german" else "🇷🇴 Румынский"
+    cfg = _sphere_by_button(btn_text)
+    await state.set_state(cfg["state"])
+    await state.update_data(filename=cfg["file"], label=cfg["label"])
+    user_id = callback.from_user.id if callback.from_user else 0
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    _start_timeout(callback.message.bot, callback.message.chat.id, user_id, state)
+    await callback.message.answer(_STATE_PROMPTS[btn_text], reply_markup=_cancel_kb())
+    await callback.answer()
+
+
+# 1c. Sphere button — works in any state (including None and other LogStates)
+@log_router.message(F.text.in_(_BUTTON_TEXTS))
+async def handle_log_button(message: Message, state: FSMContext) -> None:
+    await _enter_state(message, state, message.text)
+
+
+# 2. Any text while in LogState (commands handled by their own handlers below)
+@log_router.message(StateFilter(LogState), F.text, ~F.text.startswith("/"))
+async def handle_log_entry(message: Message, state: FSMContext) -> None:
+    text = message.text.strip()
+    user_id = message.from_user.id if message.from_user else 0
+
+    # Stop words → exit state
+    if _STOP_RE.match(text):
+        _cancel_timeout(user_id)
+        await state.clear()
+        await message.answer("Режим логирования выключен.")
+        return
+
+    # Escape: сообщение явно не является записью → выходим из режима и в LLM
+    if _LOG_ESCAPE_RE.search(text):
+        data = await state.get_data()
+        label = data.get("label", "")
+        _cancel_timeout(user_id)
+        await state.clear()
+        note = f"(вышел из режима «{label}») " if label else ""
+        logger.info("Log escape: %s→ LLM for %r", note, text)
+        from app.bot.handlers.message_router import _run_llm_chat  # lazy import
+        await _run_llm_chat(message, user_id, text)
+        return
+
+    data = await state.get_data()
+    filename: str = data.get("filename", "ivan_context.md")
+    label: str = data.get("label", "Контекст")
+
+    ok, entry = await _write_entry(filename, text)
+
+    if ok:
+        await state.update_data(last_entry=entry)
+        _start_timeout(message.bot, message.chat.id, user_id, state)  # reset timer
+        await message.answer(f"✅ {label}: {entry}", reply_markup=_entry_kb(filename))
+    else:
+        await message.answer(f"⚠️ Не смог записать: {entry}")
+
+
+# ── Inline button callbacks ───────────────────────────────────────────────────
+
+@log_router.callback_query(F.data == "done_log")
+async def cb_done_log(callback: CallbackQuery, state: FSMContext) -> None:
+    user_id = callback.from_user.id if callback.from_user else 0
+    _cancel_timeout(user_id)
+    data = await state.get_data()
+    label = data.get("label", "")
+    await state.clear()
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.message.answer(f"✅ {label} записан." if label else "Готово.")
+    await callback.answer()
+
+
+@log_router.callback_query(F.data == "more_log")
+async def cb_more_log(callback: CallbackQuery, state: FSMContext) -> None:
+    user_id = callback.from_user.id if callback.from_user else 0
+    _start_timeout(callback.message.bot, callback.message.chat.id, user_id, state)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer("Пиши следующую запись.")
+
+
+@log_router.callback_query(F.data == "cancel_log")
+async def cb_cancel_log(callback: CallbackQuery, state: FSMContext) -> None:
+    user_id = callback.from_user.id if callback.from_user else 0
+    _cancel_timeout(user_id)
+    await state.clear()
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer("Отменено.")
+
+
+# ── Undo callback (inline button "↩ Отменить") ───────────────────────────────
+
+@log_router.callback_query(F.data.startswith("undo_log:"))
+async def cb_undo_log(callback: CallbackQuery) -> None:
+    filename = callback.data.split(":", 1)[1]
+    ok, info = await delete_last_log_entry(filename)
+
+    if ok:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        display = info.lstrip("- ").strip()
+        await callback.message.answer(f"↩ Отменено: {display}")
+    else:
+        await callback.answer(info, show_alert=True)
+
+    await callback.answer()
+
+
+# ── Slash commands ────────────────────────────────────────────────────────────
+
+async def _cmd_log(
+    message: Message,
+    state: FSMContext,
+    command: CommandObject,
+    btn_text: str,
+) -> None:
+    """Shared handler for all logging slash commands."""
+    args = (command.args or "").strip()
+    cfg = _SPHERES[btn_text]
+    user_id = message.from_user.id if message.from_user else 0
+
+    if args:
+        await state.set_state(cfg["state"])
+        await state.update_data(filename=cfg["file"], label=cfg["label"])
+        ok, entry = await _write_entry(cfg["file"], args)
+        if ok:
+            await state.update_data(last_entry=entry)
+            _start_timeout(message.bot, message.chat.id, user_id, state)
+            await message.answer(f"✅ {cfg['label']}: {entry}", reply_markup=_entry_kb(cfg["file"]))
+        else:
+            await state.clear()
+            await message.answer(f"⚠️ {entry}")
+    else:
+        await _enter_state(message, state, btn_text)
+
+
+@log_router.message(Command("sleep"))
+async def cmd_sleep(message: Message, state: FSMContext, command: CommandObject) -> None:
+    await _cmd_log(message, state, command, "🌙 Сон")
+
+
+@log_router.message(Command("meal"))
+async def cmd_meal(message: Message, state: FSMContext, command: CommandObject) -> None:
+    await _cmd_log(message, state, command, "🍽 Питание")
+
+
+@log_router.message(Command("workout"))
+async def cmd_workout(message: Message, state: FSMContext, command: CommandObject) -> None:
+    await _cmd_log(message, state, command, "💪 Тренировка")
+
+
+@log_router.message(Command("german", "de"))
+async def cmd_german(message: Message, state: FSMContext, command: CommandObject) -> None:
+    await _cmd_log(message, state, command, "📖 Немецкий")
+
+
+@log_router.message(Command("romanian", "ro"))
+async def cmd_romanian(message: Message, state: FSMContext, command: CommandObject) -> None:
+    await _cmd_log(message, state, command, "🇷🇴 Румынский")
+
+
+@log_router.message(Command("ideas", "idea"))
+async def cmd_ideas(message: Message, state: FSMContext, command: CommandObject) -> None:
+    await _cmd_log(message, state, command, "💡 Идеи")
+
+
+@log_router.message(Command("ctx", "context"))
+async def cmd_ctx(message: Message, state: FSMContext, command: CommandObject) -> None:
+    await _cmd_log(message, state, command, "📊 Контекст")
+
+
+@log_router.message(Command("wish", "wishlist"))
+async def cmd_wish(message: Message, state: FSMContext, command: CommandObject) -> None:
+    await _cmd_log(message, state, command, "🛒 Список")
+
+
+@log_router.message(Command("stop"))
+async def cmd_stop(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    current = await state.get_state()
+    if current is None:
+        await message.answer("Нет активного режима.")
+        return
+    _cancel_timeout(user_id)
+    await state.clear()
+    await message.answer("Режим выключен.")
+
+
+# ── /undo [сфера] ─────────────────────────────────────────────────────────────
+
+@log_router.message(Command("undo"))
+async def cmd_undo(message: Message, state: FSMContext, command: CommandObject) -> None:
+    """Отменить последнюю запись в активной сфере или в указанной: /undo sleep"""
+    arg = (command.args or "").strip().lower()
+
+    if arg:
+        filename = _SPHERE_ARG_TO_FILE.get(arg)
+        if not filename:
+            spheres = ", ".join(sorted({v.replace(".md", "") for v in _SPHERE_ARG_TO_FILE.values()}))
+            await message.answer(
+                f"Неизвестная сфера «{arg}».\nДоступные: {spheres}"
+            )
+            return
+    else:
+        data = await state.get_data()
+        filename = data.get("filename")
+        if not filename:
+            await message.answer(
+                "Нет активного режима. Укажи сферу явно:\n"
+                "/undo sleep — сон\n/undo meal — питание\n/undo workout — тренировка"
+            )
+            return
+
+    ok, info = await delete_last_log_entry(filename)
+    if ok:
+        display = info.lstrip("- ").strip()
+        await message.answer(f"↩ Отменено: {display}")
+    else:
+        await message.answer(f"⚠️ {info}")
+
 
 # ── Sleep time parser ─────────────────────────────────────────────────────────
 
@@ -194,7 +546,6 @@ def _fmt(h: int, m: int) -> str:
 # ── Time range patterns (tried in order in parse_sleep_time) ─────────────────
 
 # "HH MM - HH MM" — space-separated hours/minutes; must be tried BEFORE colon pattern
-# to avoid "00 30 - 10 10" being misread as "30-10".
 _RANGE_SPACE_RE = re.compile(
     r"(\d{1,2})\s+(\d{2})\s*[-–—]\s*(\d{1,2})(?:\s+(\d{2}))?",
 )
@@ -240,12 +591,6 @@ def parse_sleep_time(text: str) -> str | None:
     """
     Extract sleep interval from free text.
     Returns "HH:MM–HH:MM (Xч Yм)" or None.
-
-    Handles:
-      00:30-10:00   23:30–7:30   12-8   11-7   9-7
-      00 30 - 10 10   23 30 - 7 30
-      с девяти до шести   с 23:30 до 7   с полуночи до 8   с 00 30 до 10 10
-      лег в 23, встал в 7    лег в 23 30, встал в 7 30
     """
     # 1. "с X до Y"
     m = _FROM_TO_RE.search(text)
@@ -311,201 +656,5 @@ def _format_entry(filename: str, text: str) -> str:
         sleep_time = parse_sleep_time(text)
         if sleep_time:
             rest = _strip_time_from_text(text)
-            # No "Сон:" prefix here — the label is already in the confirmation message
             return sleep_time + (f" — {rest}" if rest else "")
     return text
-
-
-# ── File auto-create ─────────────────────────────────────────────────────────
-
-async def _ensure_log_file(filename: str) -> None:
-    """Create _bot/{filename} with minimal header if it doesn't exist."""
-    path = Path(settings.obsidian_vault_path) / "_bot" / filename
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        sphere_name = filename.replace(".md", "").replace("_", " ").capitalize()
-        path.write_text(f"# {sphere_name}\n\n## Log\n", encoding="utf-8")
-        logger.info("Auto-created log file: %s", path)
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _sphere_by_button(btn: str) -> dict:
-    return _SPHERES[btn]
-
-
-async def _write_entry(filename: str, text: str) -> tuple[bool, str]:
-    """Write formatted entry to file. Returns (ok, message)."""
-    await _ensure_log_file(filename)
-    entry = _format_entry(filename, text)
-    result = await append_to_bot_log(filename, entry)
-    ok = not (result.startswith("Ошибка") or result.startswith("Файл"))
-    return ok, entry
-
-
-async def _enter_state(message: Message, state: FSMContext, btn_text: str) -> None:
-    cfg = _sphere_by_button(btn_text)
-    await state.set_state(cfg["state"])
-    await state.update_data(filename=cfg["file"], label=cfg["label"])
-    await message.answer(_STATE_PROMPTS[btn_text])
-
-
-# ── Handlers ─────────────────────────────────────────────────────────────────
-
-# 1. Sphere button — works in any state (including None and other LogStates)
-@log_router.message(F.text.in_(_BUTTON_TEXTS))
-async def handle_log_button(message: Message, state: FSMContext) -> None:
-    await _enter_state(message, state, message.text)
-
-
-# 2. Any text while in LogState
-@log_router.message(StateFilter(LogState), F.text)
-async def handle_log_entry(message: Message, state: FSMContext) -> None:
-    text = message.text.strip()
-
-    # Stop words → exit state
-    if _STOP_RE.match(text):
-        await state.clear()
-        await message.answer("Режим логирования выключен.")
-        return
-
-    # Escape: сообщение явно не является записью → выходим из режима и в LLM
-    if _LOG_ESCAPE_RE.search(text):
-        data = await state.get_data()
-        label = data.get("label", "")
-        await state.clear()
-        note = f"(вышел из режима «{label}») " if label else ""
-        logger.info("Log escape: %s→ LLM for %r", note, text)
-        from app.bot.handlers.message_router import _run_llm_chat  # lazy import
-        user_id = message.from_user.id if message.from_user else 0
-        await _run_llm_chat(message, user_id, text)
-        return
-
-    data = await state.get_data()
-    filename: str = data.get("filename", "ivan_context.md")
-    label: str = data.get("label", "Контекст")
-
-    ok, entry = await _write_entry(filename, text)
-
-    if ok:
-        await state.update_data(last_entry=entry)
-        await message.answer(f"✅ {label}: {entry}", reply_markup=_undo_kb(filename))
-    else:
-        await message.answer(f"⚠️ Не смог записать: {entry}")
-
-
-# ── Slash commands ────────────────────────────────────────────────────────────
-
-async def _cmd_log(
-    message: Message,
-    state: FSMContext,
-    command: CommandObject,
-    btn_text: str,
-) -> None:
-    """Shared handler for all logging slash commands."""
-    args = (command.args or "").strip()
-    if args:
-        cfg = _SPHERES[btn_text]
-        ok, entry = await _write_entry(cfg["file"], args)
-        if ok:
-            await state.update_data(filename=cfg["file"], label=cfg["label"], last_entry=entry)
-            await message.answer(f"✅ {cfg['label']}: {entry}", reply_markup=_undo_kb(cfg["file"]))
-        else:
-            await message.answer(f"⚠️ {entry}")
-    else:
-        await _enter_state(message, state, btn_text)
-
-
-@log_router.message(Command("sleep"))
-async def cmd_sleep(message: Message, state: FSMContext, command: CommandObject) -> None:
-    await _cmd_log(message, state, command, "🌙 Сон")
-
-
-@log_router.message(Command("meal"))
-async def cmd_meal(message: Message, state: FSMContext, command: CommandObject) -> None:
-    await _cmd_log(message, state, command, "🍽 Питание")
-
-
-@log_router.message(Command("workout"))
-async def cmd_workout(message: Message, state: FSMContext, command: CommandObject) -> None:
-    await _cmd_log(message, state, command, "💪 Тренировка")
-
-
-@log_router.message(Command("german", "de"))
-async def cmd_german(message: Message, state: FSMContext, command: CommandObject) -> None:
-    await _cmd_log(message, state, command, "📖 Немецкий")
-
-
-@log_router.message(Command("ideas", "idea"))
-async def cmd_ideas(message: Message, state: FSMContext, command: CommandObject) -> None:
-    await _cmd_log(message, state, command, "💡 Идеи")
-
-
-@log_router.message(Command("ctx", "context"))
-async def cmd_ctx(message: Message, state: FSMContext, command: CommandObject) -> None:
-    await _cmd_log(message, state, command, "📊 Контекст")
-
-
-@log_router.message(Command("stop"))
-async def cmd_stop(message: Message, state: FSMContext) -> None:
-    current = await state.get_state()
-    if current is None:
-        await message.answer("Нет активного режима.")
-        return
-    await state.clear()
-    await message.answer("Режим выключен.")
-
-
-# ── Undo callback (inline button "↩ Отменить") ───────────────────────────────
-
-@log_router.callback_query(F.data.startswith("undo_log:"))
-async def cb_undo_log(callback: CallbackQuery) -> None:
-    filename = callback.data.split(":", 1)[1]
-    ok, info = await delete_last_log_entry(filename)
-
-    if ok:
-        # Remove the undo button from the original message
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-        # Show what was deleted (strip "- [timestamp] " prefix for readability)
-        display = info.lstrip("- ").strip()
-        await callback.message.answer(f"↩ Отменено: {display}")
-    else:
-        await callback.answer(info, show_alert=True)
-
-    await callback.answer()
-
-
-# ── /undo [сфера] ─────────────────────────────────────────────────────────────
-
-@log_router.message(Command("undo"))
-async def cmd_undo(message: Message, state: FSMContext, command: CommandObject) -> None:
-    """Отменить последнюю запись в активной сфере или в указанной: /undo sleep"""
-    arg = (command.args or "").strip().lower()
-
-    if arg:
-        filename = _SPHERE_ARG_TO_FILE.get(arg)
-        if not filename:
-            spheres = ", ".join(sorted({v.replace(".md", "") for v in _SPHERE_ARG_TO_FILE.values()}))
-            await message.answer(
-                f"Неизвестная сфера «{arg}».\nДоступные: {spheres}"
-            )
-            return
-    else:
-        data = await state.get_data()
-        filename = data.get("filename")
-        if not filename:
-            await message.answer(
-                "Нет активного режима. Укажи сферу явно:\n"
-                "/undo sleep — сон\n/undo meal — питание\n/undo workout — тренировка"
-            )
-            return
-
-    ok, info = await delete_last_log_entry(filename)
-    if ok:
-        display = info.lstrip("- ").strip()
-        await message.answer(f"↩ Отменено: {display}")
-    else:
-        await message.answer(f"⚠️ {info}")

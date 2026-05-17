@@ -43,6 +43,26 @@ def invalidate_memory_cache() -> None:
     _MEMORY_CACHE["ts"] = 0.0
 
 
+# ── In-process кэш energy_matrix.md ──────────────────────────────────────────
+_ENERGY_MATRIX_CACHE: dict = {"content": "", "ts": 0.0}
+_ENERGY_MATRIX_TTL = 300  # секунд
+
+
+def read_energy_matrix_sync() -> str:
+    """Синхронное чтение energy_matrix.md с TTL-кэшем 5 мин."""
+    now = time.monotonic()
+    if now - _ENERGY_MATRIX_CACHE["ts"] < _ENERGY_MATRIX_TTL:
+        return _ENERGY_MATRIX_CACHE["content"]
+    path = Path(settings.obsidian_vault_path) / "_bot" / "energy_matrix.md"
+    try:
+        content = path.read_text(encoding="utf-8").strip()
+    except (OSError, FileNotFoundError):
+        content = ""
+    _ENERGY_MATRIX_CACHE["content"] = content
+    _ENERGY_MATRIX_CACHE["ts"] = now
+    return content
+
+
 def _write_log_entry(sphere: str, raw_text: str, logged_at: str) -> int | None:
     """Дублирует запись лога в SQLite. Возвращает entry ID или None при ошибке."""
     user_id = settings.allowed_user_id
@@ -104,6 +124,10 @@ SPHERE_MAP: dict[str, str] = {
     "tasks":     "tasks",
     "энергия":   "energy",
     "energy":    "energy",
+    "wishlist":  "wishlist",
+    "список":    "wishlist",
+    "покупки":   "wishlist",
+    "wish":      "wishlist",
 }
 
 # Уникальные канонические имена — показываем в сообщениях об ошибке

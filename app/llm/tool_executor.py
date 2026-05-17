@@ -76,20 +76,21 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
 
     if name == "create_task":
         time_val = args.get("time") or None
+        date_val = args.get("date") or None
         repo = TaskRepo(session)
         task_id = repo.insert_pending(
             text=args["text"],
-            date=args["date"],
+            date=date_val,
             event_time=time_val,
             all_day=time_val is None,
             user_id=user_id,
         )
-        # Задача создана через LLM = пользователь уже подтвердил намерение.
-        # Сразу переводим в confirmed, чтобы она не была уязвима для /cleanup
-        # и гарантированно отображалась в утреннем плане и get_upcoming_tasks.
         repo.confirm(task_id)
         session.commit()
-        logger.info("Tool create_task → id=%s (confirmed)", task_id)
+        logger.info("Tool create_task → id=%s date=%s (confirmed)", task_id, date_val)
+
+        if date_val is None:
+            return f"Задача добавлена в бэклог, id={task_id}: «{args['text']}» (без даты — предложу в свободное время)"
 
         synced = False
         task = repo.get(task_id)
@@ -105,7 +106,7 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
                 logger.exception("Google Calendar sync failed for task id=%s", task_id)
 
         cal_note = "" if synced else " (в календарь не добавлена, но сохранена в базе)"
-        return f"Задача создана, id={task_id}: «{args['text']}» на {args['date']}{cal_note}"
+        return f"Задача создана, id={task_id}: «{args['text']}» на {date_val}{cal_note}"
 
     if name == "complete_task":
         ids = _resolve_task_ids(args, session, user_id)

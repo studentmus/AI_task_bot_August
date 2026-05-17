@@ -10,5 +10,7 @@ class LogState(StatesGroup):
     nutrition = State()
     training  = State()
     german    = State()
+    romanian  = State()
     ideas     = State()
     context   = State()
+    wishlist  = State()
