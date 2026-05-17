@@ -586,8 +586,26 @@ async def dispatch_text(message: Message) -> None:
         return
 
     # ── 6. RULE-BASED ПАРСЕР / FALLBACK → LLM ───────────────────────────────────
+    # Передаём последние 3 сообщения диалога как контекст — парсер видит что мы
+    # обсуждали (например, "что у меня на завтра") и корректно инфeрирует дату.
+    _dialog_context: str | None = None
     try:
-        parsed_list: list[ParseResult] = await asyncio.to_thread(parse_task, raw)
+        with SessionLocal() as _ctx_sess:
+            from app.storage.dialog_repo import DialogRepo
+            _recent = DialogRepo(_ctx_sess).get_recent(user_id)  # list[dict]
+            if _recent:
+                last3 = _recent[-3:]
+                _dialog_context = "\n".join(
+                    f"{'Пользователь' if m['role'] == 'user' else 'Бот'}: {m['content'][:120]}"
+                    for m in last3
+                )
+    except Exception:
+        pass
+
+    try:
+        parsed_list: list[ParseResult] = await asyncio.to_thread(
+            parse_task, raw, context=_dialog_context
+        )
     except ValueError:
         # Дата не распознана → LLM tool-calling
         await _run_llm_chat(message, user_id, raw)

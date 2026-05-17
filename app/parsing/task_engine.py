@@ -432,12 +432,12 @@ def _sanitize_llm_clean_text(llm_clean: str, original: str) -> str:
     return fallback if fallback and fallback != "Без названия" else cleanup_text(original)
 
 
-def parse_llm(text: str, base: Optional[date] = None) -> list[ParseResult]:
+def parse_llm(text: str, base: Optional[date] = None, context: Optional[str] = None) -> list[ParseResult]:
     from app.llm.deepseek_client import call_deepseek_parse
     from app.llm.prompt_builder import build_task_prompt
 
     base = base or today_local()
-    prompt = build_task_prompt(text, base)
+    prompt = build_task_prompt(text, base, context=context)
     parsed = call_deepseek_parse(prompt)
 
     # Новый формат: {"tasks": [...]}; старый формат (один объект) — обратная совместимость.
@@ -530,7 +530,7 @@ def _apply_stop_phrases(results: list[ParseResult]) -> list[ParseResult]:
     return results
 
 
-def parse_task(text: str, base: Optional[date] = None) -> list[ParseResult]:
+def parse_task(text: str, base: Optional[date] = None, context: Optional[str] = None) -> list[ParseResult]:
     base = base or today_local()
     text = cleanup_text(text)
 
@@ -538,7 +538,7 @@ def parse_task(text: str, base: Optional[date] = None) -> list[ParseResult]:
     if _is_complex_text(text):
         logger.info("Complex text → LLM for %r", text)
         try:
-            return _apply_stop_phrases(parse_llm(text, base))
+            return _apply_stop_phrases(parse_llm(text, base, context=context))
         except Exception:
             logger.exception("LLM failed, using fallback for %r", text)
             return _apply_stop_phrases(parse_complex_fallback(text, base))
@@ -555,7 +555,7 @@ def parse_task(text: str, base: Optional[date] = None) -> list[ParseResult]:
         )
 
     try:
-        return _apply_stop_phrases(parse_llm(text, base))
+        return _apply_stop_phrases(parse_llm(text, base, context=context))
     except Exception:
         logger.exception("LLM failed, using fallback for %r", text)
         return _apply_stop_phrases(parse_complex_fallback(text, base))

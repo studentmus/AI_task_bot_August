@@ -220,9 +220,10 @@ def _cmds_inline_kb() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="📅 День",       callback_data="cmd_exec:dayplan"),
-            InlineKeyboardButton(text="⏹ Стоп",       callback_data="cmd_exec:stop"),
+            InlineKeyboardButton(text="🔁 Повтор",     callback_data="cmd_exec:recurring"),
         ],
         [
+            InlineKeyboardButton(text="⏹ Стоп",       callback_data="cmd_exec:stop"),
             InlineKeyboardButton(text="❓ Справка",    callback_data="cmd_exec:help"),
         ],
     ])
@@ -415,6 +416,30 @@ async def cb_cmd_exec(callback: CallbackQuery, state: FSMContext) -> None:
     elif cmd == "dayplan":
         from app.bot.handlers.message_router import _run_day_plan
         await _run_day_plan(callback.message, user_id)
+
+    elif cmd == "recurring":
+        from app.storage.db import SessionLocal as _SL
+        from app.storage.recurring_repo import RecurringRepo
+        with _SL() as _rs:
+            items = RecurringRepo(_rs).list_active(user_id)
+        if not items:
+            await callback.message.answer(
+                "Повторяющихся задач нет.\n\nСоздать: «напоминай каждый день пить витамины»"
+            )
+        else:
+            days_ru = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            lines = ["🔁 Повторяющиеся задачи:\n"]
+            for rt in items:
+                recur = {"daily": "ежедневно", "weekdays": "Пн-Пт"}.get(rt.recurrence)
+                if recur is None and rt.recurrence.startswith("weekly:"):
+                    try:
+                        recur = f"каждый {days_ru[int(rt.recurrence.split(':')[1])]}"
+                    except (ValueError, IndexError):
+                        recur = rt.recurrence
+                end_str = f" до {rt.end_date}" if rt.end_date else ""
+                time_str = f" {rt.event_time}" if rt.event_time else ""
+                lines.append(f"{rt.id}. {rt.text} — {recur}{time_str}{end_str}")
+            await callback.message.answer("\n".join(lines))
 
     elif cmd == "stop":
         _cancel_timeout(user_id)

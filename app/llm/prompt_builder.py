@@ -12,11 +12,14 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 def build_task_prompt(text: str, base: date, context: str | None = None) -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
     weekdays_ru = [
         "понедельник", "вторник", "среда", "четверг",
         "пятница", "суббота", "воскресенье",
     ]
     weekday = weekdays_ru[base.weekday()]
+    now_time = datetime.now(ZoneInfo(settings.task_timezone)).strftime("%H:%M")
 
     context_block = f"\nКонтекст пользователя:\n{context}\n" if context else ""
 
@@ -24,6 +27,7 @@ def build_task_prompt(text: str, base: date, context: str | None = None) -> str:
 
 Сегодня: {base.isoformat()}.
 День недели: {weekday}.
+Текущее время: {now_time}.
 Таймзона пользователя: {settings.task_timezone}.
 Язык входа: русский, иногда английский.
 
@@ -43,6 +47,7 @@ def build_task_prompt(text: str, base: date, context: str | None = None) -> str:
 - Если пользователь указал диапазон времени (например, "с 10:00 до 15:00"), записывай в поле time через дефис: "10:00-15:00". all_day = false.
 - Если времени нет: time = null, all_day = true
 - Если время есть: all_day = false
+- Используй контекст диалога (если есть) для определения даты — например, если до этого обсуждали завтрашний день, "добавь на 17:30" относится к завтра.
 {context_block}
 Вход: {text!r}""".strip()
 
