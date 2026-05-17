@@ -211,6 +211,10 @@ def _cmds_inline_kb() -> InlineKeyboardMarkup:
     """Technical commands shown when '⚙️ Команды' button is pressed."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
+            InlineKeyboardButton(text="📋 Сегодня",   callback_data="cmd_exec:today"),
+            InlineKeyboardButton(text="📋 Завтра",    callback_data="cmd_exec:tomorrow"),
+        ],
+        [
             InlineKeyboardButton(text="📋 Задачи",    callback_data="cmd_exec:pending"),
             InlineKeyboardButton(text="🧹 Очистить",  callback_data="cmd_exec:cleanup"),
         ],
@@ -374,7 +378,11 @@ async def cb_cmd_exec(callback: CallbackQuery, state: FSMContext) -> None:
 
     user_id = callback.from_user.id if callback.from_user else 0
 
-    if cmd == "pending":
+    if cmd in ("today", "tomorrow"):
+        from app.bot.handlers.message_router import _run_day_view
+        await _run_day_view(callback.message, user_id, "сегодня" if cmd == "today" else "завтра")
+
+    elif cmd == "pending":
         from app.storage.db import SessionLocal
         from app.storage.task_repo import TaskRepo
         with SessionLocal() as session:

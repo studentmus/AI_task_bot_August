@@ -182,6 +182,15 @@ def _extract_rec_sphere(text: str) -> str | None:
             return sphere
     return None
 
+# Детерминированный просмотр плана дня — прямой DB-запрос, без LLM.
+# Ловит "что на завтра", "что у нас на сегодня", "покажи задачи завтра" и т.п.
+_DAY_VIEW_RE = re.compile(
+    r"\bчто\s+(?:у\s+(?:меня|нас|тебя)\s+)?на\s+(?P<when>сегодня|завтра|послезавтра)\b"
+    r"|\bпокажи\s+(?:задачи|план|расписание)?\s*(?:на\s+)?(?P<when2>сегодня|завтра)\b"
+    r"|\b(?:задачи|план)\s+на\s+(?P<when3>сегодня|завтра)\b",
+    re.IGNORECASE,
+)
+
 # Пассивный детектор отказа от важного дела (тренировка, учёба).
 # Срабатывает только если энергия >= 5 → мотивационный пинок.
 _TRAINING_REFUSAL_RE = re.compile(
@@ -453,6 +462,15 @@ async def dispatch_text(message: Message) -> None:
         await _run_day_plan(message, user_id)
         return
 
+    # ── 0.4. ПРОСМОТР ДНЯ: "что на завтра", "что у нас на сегодня" → прямой DB ──
+    # Rule-based парсер создаёт фантомные задачи из этих фраз — обходим его полностью.
+    _dv = _DAY_VIEW_RE.search(lower)
+    if _dv:
+        _when = (_dv.group("when") or _dv.group("when2") or _dv.group("when3") or "сегодня").lower()
+        logger.info("Day view request (%s) → deterministic DB for %r", _when, raw)
+        await _run_day_view(message, user_id, _when)
+        return
+
     # ── 0.5. СЛЕДУЮЩИЙ ШАГ — специализированный engine (энергия + GCal + алёрты) ──
     if _NEXT_STEP_RE.search(lower):
         logger.info("Next-step request → engine for %r", raw)
@@ -634,6 +652,44 @@ async def dispatch_text(message: Message) -> None:
 
     for card, kb in messages_to_send:
         await message.answer("✅ " + card, reply_markup=kb)
+
+
+# ---------------------------------------------------------------------------
+# Детерминированный просмотр плана на день (без LLM)
+# ---------------------------------------------------------------------------
+
+_MONTHS_RU = ["января","февраля","марта","апреля","мая","июня",
+               "июля","августа","сентября","октября","ноября","декабря"]
+_WEEKDAYS_RU_VIEW = ["понедельник","вторник","среда","четверг","пятница","суббота","воскресенье"]
+
+
+async def _run_day_view(message: Message, user_id: int, when: str) -> None:
+    from datetime import date, timedelta
+    today = date.today()
+    if when == "завтра":
+        target = today + timedelta(days=1)
+    elif when == "послезавтра":
+        target = today + timedelta(days=2)
+    else:
+        target = today
+
+    target_str = target.isoformat()
+    day_label = f"{target.day} {_MONTHS_RU[target.month - 1]} ({_WEEKDAYS_RU_VIEW[target.weekday()]})"
+    header = ("Сегодня" if target == today else "Завтра") + f", {day_label}:"
+
+    with SessionLocal() as session:
+        tasks = TaskRepo(session).get_today_all(user_id, today=target_str)
+
+    if not tasks:
+        await message.answer(f"{header}\nЗадач нет.")
+        return
+
+    lines = [header]
+    for t in tasks:
+        prefix = "✅" if t.status == "done" else "•"
+        time_str = f"{t.event_time} — " if (t.event_time and not t.all_day) else ""
+        lines.append(f"{prefix} {time_str}{t.text}")
+    await message.answer("\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
