@@ -111,6 +111,29 @@ _READ_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Повторяющиеся события: "каждый день", "напоминай", "ежедневно" → LLM create_recurring_task.
+# Rule-based парсер не знает об этом инструменте — создаёт обычную задачу.
+_RECURRING_RE = re.compile(
+    r"\bкаждый\b|\bкаждую\b|\bкаждое\b|\bкаждые\b"
+    r"|\bежедневно\b|\bеженедельно\b"
+    r"|\bнапоминай\b"
+    r"|\bповторяй\b|\bповторяющ"
+    r"|\bпо\s+(?:утрам|вечерам|понедельникам|вторникам|средам|четвергам|пятницам|субботам|воскресеньям)\b",
+    re.IGNORECASE,
+)
+
+# Явные коррекции задачи без местоимения: "тренировка закончится в 19 а не в 18",
+# "перенеси встречу на завтра", "продлится до 20:00" — двигаем/правим, не создаём.
+_TASK_EDIT_RE = re.compile(
+    r"\bа\s+не\s+в\s+\d{1,2}\b"                        # "а не в 18"
+    r"|\bзаканчивается?\s+в\b|\bзакончит[ься]*\s+в\b"  # "закончится в 19"
+    r"|\bпродлит[ься]*\s+до\b"                          # "продлится до 20:00"
+    r"|\bперенес[ти]*\s+на\b|\bперенеси\s+на\b"        # "перенеси на завтра"
+    r"|\bизмени.*вр[ея]м\b"                             # "измени время"
+    r"|\bновое\s+вр[ея]м\b",                            # "новое время"
+    re.IGNORECASE,
+)
+
 # Контекстные объяснения: пользователь сообщает статус/ситуацию, НЕ создаёт задачу.
 # "мы уже выяснили", "ждём документы", "новости будут осенью" → LLM как чат.
 _CONTEXT_UPDATE_RE = re.compile(
@@ -545,6 +568,20 @@ async def dispatch_text(message: Message) -> None:
     # "мы уже выяснили", "ждем документы", "новости будут осенью" — не задачи.
     if _CONTEXT_UPDATE_RE.search(lower):
         logger.info("Context update detected → LLM chat for %r", raw)
+        await _run_llm_chat(message, user_id, raw)
+        return
+
+    # ── 5.9. КОРРЕКЦИЯ ЗАДАЧИ: "тренировка закончится в 19 а не в 18" → LLM move_task
+    # Явные правки времени/даты без местоимения — иначе rule-based создаст новую задачу.
+    if _TASK_EDIT_RE.search(lower):
+        logger.info("Task edit detected → LLM for %r", raw)
+        await _run_llm_chat(message, user_id, raw)
+        return
+
+    # ── 5.95. ПОВТОРЯЮЩИЕСЯ СОБЫТИЯ: "каждый день", "напоминай", "ежедневно" ────
+    # Rule-based парсер не знает о create_recurring_task — создаст обычную задачу.
+    if _RECURRING_RE.search(lower):
+        logger.info("Recurring pattern detected → LLM for %r", raw)
         await _run_llm_chat(message, user_id, raw)
         return
 

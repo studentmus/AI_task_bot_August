@@ -73,6 +73,7 @@ _KEY_TO_BTN: dict[str, str] = {
     "ideas":     "💡 Идеи",
     "wishlist":  "🛒 Список",
     "context":   "📊 Контекст",
+    "guitar":    "🎸 Гитара",
 }
 
 # ── Sphere config ────────────────────────────────────────────────────────────
@@ -86,6 +87,7 @@ _SPHERES: dict[str, dict] = {
     "💡 Идеи":       {"state": LogState.ideas,      "file": "ideas.md",        "label": "Идеи"},
     "📊 Контекст":   {"state": LogState.context,    "file": "ivan_context.md", "label": "Контекст"},
     "🛒 Список":     {"state": LogState.wishlist,   "file": "wishlist.md",     "label": "Список покупок"},
+    "🎸 Гитара":     {"state": LogState.guitar,     "file": "guitar.md",       "label": "Гитара"},
 }
 
 # Кнопки reply-keyboard (не включают языки — они в подменю)
@@ -100,6 +102,7 @@ _STATE_PROMPTS = {
     "💡 Идеи":       "💡 Режим: Идеи. Пиши:",
     "📊 Контекст":   "📊 Режим: Контекст. Что зафиксировать?",
     "🛒 Список":     "🛒 Режим: Список покупок.\nПиши что хочешь купить, можно с категорией:\n  [Техника] AirPods Pro\n  [Быт] фильтр для воды\n  [Одежда] кроссовки Nike",
+    "🎸 Гитара":     "🎸 Режим: Гитара. Что играл / учил?",
 }
 
 # ── Stop pattern ─────────────────────────────────────────────────────────────
@@ -136,6 +139,7 @@ _SPHERE_ARG_TO_FILE: dict[str, str] = {
     "ctx": "ivan_context.md",  "context": "ivan_context.md",  "контекст": "ivan_context.md",
     "health": "health.md",     "здоровье": "health.md",
     "wish": "wishlist.md",     "wishlist": "wishlist.md",     "список": "wishlist.md",
+    "guitar": "guitar.md",     "гитара": "guitar.md",
 }
 
 # ── Auto-exit timeout ─────────────────────────────────────────────────────────
@@ -186,10 +190,11 @@ def _sphere_inline_kb() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="🌍 Языки",      callback_data="log_sphere:languages"),
             InlineKeyboardButton(text="💡 Идеи",       callback_data="log_sphere:ideas"),
-            InlineKeyboardButton(text="🛒 Список",     callback_data="log_sphere:wishlist"),
+            InlineKeyboardButton(text="🎸 Гитара",     callback_data="log_sphere:guitar"),
         ],
         [
             InlineKeyboardButton(text="📊 Контекст",   callback_data="log_sphere:context"),
+            InlineKeyboardButton(text="🛒 Список",     callback_data="log_sphere:wishlist"),
         ],
     ])
 
@@ -637,6 +642,11 @@ async def cmd_ctx(message: Message, state: FSMContext, command: CommandObject) -
 @log_router.message(Command("wish", "wishlist"))
 async def cmd_wish(message: Message, state: FSMContext, command: CommandObject) -> None:
     await _cmd_log(message, state, command, "🛒 Список")
+
+
+@log_router.message(Command("guitar"))
+async def cmd_guitar(message: Message, state: FSMContext, command: CommandObject) -> None:
+    await _cmd_log(message, state, command, "🎸 Гитара")
 
 
 @log_router.message(Command("stop"))

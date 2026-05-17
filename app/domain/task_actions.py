@@ -150,5 +150,8 @@ class TaskActions:
     def get_today_plan(self, user_id: int, today: Optional[str] = None) -> list[Task]:
         return self._repo.get_today_plan(user_id, today)
 
+    def get_today_all(self, user_id: int, today: Optional[str] = None) -> list[Task]:
+        return self._repo.get_today_all(user_id, today)
+
     def get_active_task(self, user_id: int) -> Optional[Task]:
         return self._repo.get_active_task(user_id)

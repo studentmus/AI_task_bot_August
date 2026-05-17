@@ -183,6 +183,8 @@ SPHERE_MAP: dict[str, str] = {
     "список":    "wishlist",
     "покупки":   "wishlist",
     "wish":      "wishlist",
+    "гитара":    "guitar",
+    "guitar":    "guitar",
 }
 
 # Уникальные канонические имена — показываем в сообщениях об ошибке
@@ -527,8 +529,9 @@ async def _git_sync_impl(rel_path: str, sphere: str) -> str:
     # потом пушим. Это предотвращает "Your local changes would be overwritten".
     cwd_flag = f"git -C {cwd}"
 
-    # 1. Stage только наш файл
-    code, out = await _run(f"{cwd_flag} add {rel_path}")
+    # 1. Stage все изменения (не только текущий файл) — иначе unstaged файлы
+    #    ломают `git pull --rebase` на следующем шаге.
+    code, out = await _run(f"{cwd_flag} add -A")
     if code != 0:
         logger.warning("git add failed: %s", out)
         return f"ошибка git add: {out[:200]}"

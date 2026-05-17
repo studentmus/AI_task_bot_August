@@ -115,6 +115,7 @@ def start_scheduler(bot: Bot, storage: BaseStorage) -> AsyncIOScheduler:
     from app.jobs.evening_review import send_evening_review
     from app.jobs.morning_plan import send_morning_plan
     from app.jobs.next_step_push import send_next_step_push
+    from app.jobs.recurring_spawn import spawn_recurring_tasks
 
     scheduler = AsyncIOScheduler(timezone=settings.task_timezone)
 
@@ -160,6 +161,13 @@ def start_scheduler(bot: Bot, storage: BaseStorage) -> AsyncIOScheduler:
         trigger=CronTrigger(hour=14, minute=0, timezone=settings.task_timezone),
         args=[bot],
         id="backlog_nudge",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        spawn_recurring_tasks,
+        trigger=CronTrigger(hour=7, minute=0, timezone=settings.task_timezone),
+        args=[bot],
+        id="recurring_spawn",
         replace_existing=True,
     )
 

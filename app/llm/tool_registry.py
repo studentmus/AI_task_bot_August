@@ -504,4 +504,67 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_recurring_task",
+            "description": (
+                "Создать повторяющееся событие/напоминание на период. "
+                "Используй когда пользователь говорит 'каждый день', 'каждый понедельник', "
+                "'ежедневно', 'по рабочим дням', 'каждую неделю по X', 'до конца месяца'. "
+                "Задача будет автоматически создаваться каждое утро в 07:00. "
+                "НЕ создавай обычную задачу через create_task для повторяющихся событий."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Название задачи (без слов 'каждый день' и т.п.).",
+                    },
+                    "recurrence": {
+                        "type": "string",
+                        "description": (
+                            "Паттерн повторения: "
+                            "'daily' — каждый день, "
+                            "'weekdays' — по рабочим дням (Пн-Пт), "
+                            "'weekly:0' — каждый понедельник, "
+                            "'weekly:1' — каждый вторник, ..., "
+                            "'weekly:6' — каждое воскресенье."
+                        ),
+                    },
+                    "time": {
+                        "type": ["string", "null"],
+                        "description": "Время в формате HH:MM или HH:MM-HH:MM. Null если без времени.",
+                    },
+                    "end_date": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Дата окончания YYYY-MM-DD. Null = бессрочно. "
+                            "Примеры: 'до конца мая' → '2026-05-31', 'до экзамена 20 июня' → '2026-06-20'."
+                        ),
+                    },
+                },
+                "required": ["text", "recurrence"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_recurring_tasks",
+            "description": (
+                "Показать список активных повторяющихся задач пользователя. "
+                "Используй когда спрашивают 'какие у меня повторяющиеся задачи', "
+                "'/recurring', 'покажи повторяющиеся события'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]

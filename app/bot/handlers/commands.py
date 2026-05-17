@@ -24,13 +24,15 @@ _HELP_TEXT = (
     "  /ideas [текст]    — идеи\n"
     "  /ctx   [текст]    — личный контекст\n"
     "  /wish  [текст]    — список покупок\n"
+    "  /guitar [текст]   — игра на гитаре\n"
     "  /stop             — выйти из режима\n"
     "  /undo [сфера]    — отменить последнюю запись\n\n"
     "── Задачи (свободный текст) ──\n"
     "  «завтра в 15:00 встреча» — создать задачу\n"
     "  «разобрать ящик» — без даты → бэклог\n"
-    "  /pending  — последние задачи\n"
-    "  /cleanup  — очистить мусор\n\n"
+    "  /pending   — последние задачи\n"
+    "  /recurring — повторяющиеся задачи\n"
+    "  /cleanup   — очистить мусор\n\n"
     "── Инструменты ──\n"
     "  /motivate [категория] — мотивационный пинок\n"
     "  Категории: зал, thesis, немецкий, румынский\n\n"
@@ -97,3 +99,31 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await message.answer("Действие отменено.")
+
+
+@commands_router.message(Command("recurring"))
+async def cmd_recurring(message: Message) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    with SessionLocal() as session:
+        from app.storage.recurring_repo import RecurringRepo
+        items = RecurringRepo(session).list_active(user_id)
+
+    if not items:
+        await message.answer("Повторяющихся задач нет.\n\nСоздать: «напоминай каждый день пить витамины»")
+        return
+
+    days_ru = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    lines = ["🔁 Повторяющиеся задачи:\n"]
+    for rt in items:
+        recur = {"daily": "ежедневно", "weekdays": "Пн-Пт"}.get(rt.recurrence)
+        if recur is None and rt.recurrence.startswith("weekly:"):
+            try:
+                n = int(rt.recurrence.split(":")[1])
+                recur = f"каждый {days_ru[n]}"
+            except (ValueError, IndexError):
+                recur = rt.recurrence
+        end_str = f" до {rt.end_date}" if rt.end_date else ""
+        time_str = f" {rt.event_time}" if rt.event_time else ""
+        lines.append(f"{rt.id}. {rt.text} — {recur}{time_str}{end_str}")
+
+    await message.answer("\n".join(lines))

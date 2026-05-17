@@ -101,8 +101,51 @@ async def cb_confirm(callback: CallbackQuery) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Callback: отменить / удалить задачу
+# Callback: отменить / удалить задачу (двухшаговое подтверждение)
 # ---------------------------------------------------------------------------
+
+@tasks_router.callback_query(F.data.startswith("cancel_confirm_"))
+async def cb_cancel_confirm(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if callback.message is None:
+        return
+    task_id = int(callback.data.split("_", 2)[2])
+
+    with SessionLocal() as session:
+        repo = TaskRepo(session)
+        task = repo.get(task_id)
+        if task is None:
+            await callback.message.edit_text("⚠️ Задача не найдена.")
+            return
+        task.status = "cancelled"
+        session.commit()
+
+    await callback.message.edit_text("Задача отменена.")
+
+
+@tasks_router.callback_query(F.data.startswith("cancel_abort_"))
+async def cb_cancel_abort(callback: CallbackQuery) -> None:
+    await callback.answer("Отменено.")
+    if callback.message is None:
+        return
+    task_id = int(callback.data.split("_", 2)[2])
+
+    with SessionLocal() as session:
+        task = TaskRepo(session).get(task_id)
+
+    if task:
+        try:
+            await callback.message.edit_text(
+                _build_card(task), reply_markup=_build_keyboard(task_id)
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
 
 @tasks_router.callback_query(F.data.startswith("cancel_"))
 async def cb_cancel(callback: CallbackQuery) -> None:
@@ -112,16 +155,17 @@ async def cb_cancel(callback: CallbackQuery) -> None:
     task_id = int(callback.data.split("_", 1)[1])
 
     with SessionLocal() as session:
-        repo = TaskRepo(session)
-        task = repo.get(task_id)
-        if task is None:
-            await callback.message.edit_text("⚠️ Задача не найдена.")
-            return
-        # Мягкое удаление: статус → cancelled, физически строка остаётся
-        task.status = "cancelled"
-        session.commit()
+        task = TaskRepo(session).get(task_id)
 
-    await callback.message.edit_text("Задача отменена.")
+    if task is None:
+        await callback.message.edit_text("⚠️ Задача не найдена.")
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"cancel_confirm_{task_id}"),
+        InlineKeyboardButton(text="❌ Нет",          callback_data=f"cancel_abort_{task_id}"),
+    ]])
+    await callback.message.edit_text(f"❓ Удалить «{task.text}»?", reply_markup=kb)
 
 
 # ---------------------------------------------------------------------------

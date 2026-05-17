@@ -120,6 +120,7 @@ def _get_today_activity(session: Session, user_id: int) -> dict[str, bool]:
         "german":   "german"    in spheres,
         "romanian": "romanian"  in spheres,
         "walked":   walked,
+        "guitar":   "guitar"    in spheres,
     }
 
 
@@ -129,6 +130,7 @@ _ACTIVITY_LABELS: list[tuple[str, str]] = [
     ("trained",  "тренировка"),
     ("german",   "немецкий"),
     ("romanian", "румынский"),
+    ("guitar",   "🎸 гитара"),
 ]
 
 
@@ -179,10 +181,11 @@ def _build_context_prompt(ctx: dict) -> str:
     # Today's activity
     act = ctx.get("today_activity")
     if act is not None:
+        _OPTIONAL = {"guitar"}  # показываем в "сделано", но не в "не было"
         done = [lbl for key, lbl in _ACTIVITY_LABELS if act.get(key)]
         if act.get("walked") and "тренировка" not in done:
             done.append("прогулка")
-        not_done = [lbl for key, lbl in _ACTIVITY_LABELS if not act.get(key)]
+        not_done = [lbl for key, lbl in _ACTIVITY_LABELS if not act.get(key) and key not in _OPTIONAL]
         lines.append(f"Сделано сегодня: {', '.join(done) if done else 'ничего'}")
         if not_done:
             lines.append(f"Ещё не было сегодня: {', '.join(not_done)}")

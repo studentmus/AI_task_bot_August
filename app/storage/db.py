@@ -79,6 +79,20 @@ class DialogMessage(Base):
     created_at = Column(String, nullable=False)
 
 
+class RecurringTask(Base):
+    __tablename__ = "recurring_tasks"
+
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    telegram_user_id = Column(Integer, nullable=False, index=True)
+    text             = Column(String, nullable=False)
+    event_time       = Column(String, nullable=True)   # "09:00" | "09:00-10:00" | None
+    recurrence       = Column(String, nullable=False)  # "daily" | "weekdays" | "weekly:N" (N=0..6)
+    start_date       = Column(String, nullable=False)  # YYYY-MM-DD
+    end_date         = Column(String, nullable=True)   # YYYY-MM-DD | None = indefinite
+    active           = Column(Boolean, default=True)
+    created_at       = Column(String, nullable=False)
+
+
 def _apply_migrations() -> None:
     """Добавляет/переименовывает колонки в существующей БД (idempotent)."""
     insp = inspect(engine)
@@ -98,6 +112,9 @@ def _apply_migrations() -> None:
         existing_log = {col["name"] for col in insp.get_columns("log_entries")}
         if "structured_data" not in existing_log:
             pending.append("ALTER TABLE log_entries ADD COLUMN structured_data TEXT")
+
+    # recurring_tasks table is created by Base.metadata.create_all, but if DB
+    # predates this feature we still need it. create_all handles new tables safely.
 
     if not pending:
         return

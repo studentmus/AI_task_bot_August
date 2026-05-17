@@ -48,11 +48,13 @@ async def _set_commands(bot: Bot) -> None:
         BotCommand(command="ideas",    description="💡 Записать идею"),
         BotCommand(command="ctx",      description="📊 Записать личную заметку"),
         BotCommand(command="wish",     description="🛒 Записать в список покупок"),
+        BotCommand(command="guitar",   description="🎸 Записать игру на гитаре"),
         BotCommand(command="stop",     description="⏹ Выйти из режима логирования"),
         BotCommand(command="undo",     description="↩ Отменить последнюю запись (/undo sleep)"),
         # ── Задачи ───────────────────────────────────────────────────────
-        BotCommand(command="pending",  description="📋 Последние задачи в базе"),
-        BotCommand(command="cleanup",  description="🧹 Очистить мусорные задачи"),
+        BotCommand(command="pending",   description="📋 Последние задачи в базе"),
+        BotCommand(command="recurring", description="🔁 Повторяющиеся задачи"),
+        BotCommand(command="cleanup",   description="🧹 Очистить мусорные задачи"),
         # ── Инструменты ──────────────────────────────────────────────────
         BotCommand(command="motivate", description="💢 Мотивационный пинок (/motivate зал)"),
         BotCommand(command="start",    description="🤖 Справка и список команд"),

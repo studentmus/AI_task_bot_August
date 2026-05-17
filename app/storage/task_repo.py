@@ -89,6 +89,20 @@ class TaskRepo:
             .all()
         )
 
+    def get_today_all(self, user_id: int, today: Optional[str] = None) -> list[Task]:
+        """Все задачи на сегодня: pending/confirmed/done (cancelled исключены)."""
+        today_str = today or date.today().isoformat()
+        return (
+            self._s.query(Task)
+            .filter(
+                Task.telegram_user_id == user_id,
+                Task.suggested_date == today_str,
+                Task.status.in_(["pending", "confirmed", "done"]),
+            )
+            .order_by(Task.event_time.asc().nulls_last(), Task.id.asc())
+            .all()
+        )
+
     def get_active_task(self, user_id: int) -> Optional[Task]:
         """Последняя незавершённая задача пользователя."""
         return (

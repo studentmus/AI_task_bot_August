@@ -577,6 +577,14 @@ def parse_time_input(text: str) -> tuple[Optional[str], bool]:
     if m:
         return f"{_validate_single_time(m.group(1))}-{_validate_single_time(m.group(2))}", False
 
+    # Диапазон без минут "H-H", смешанный "H:MM-H", "H-H:MM"
+    m = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?\s*-\s*(\d{1,2})(?::(\d{2}))?", lower)
+    if m:
+        sh, sm_ = int(m.group(1)), int(m.group(2) or 0)
+        eh, em_ = int(m.group(3)), int(m.group(4) or 0)
+        if 0 <= sh <= 23 and 0 <= sm_ <= 59 and 0 <= eh <= 23 and 0 <= em_ <= 59:
+            return f"{sh:02d}:{sm_:02d}-{eh:02d}:{em_:02d}", False
+
     # Диапазон на естественном языке: "с 10 до 12", "с 9 утра до 5 вечера"
     range_result = _extract_time_range_natural(lower)
     if range_result:

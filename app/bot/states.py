@@ -14,3 +14,4 @@ class LogState(StatesGroup):
     ideas     = State()
     context   = State()
     wishlist  = State()
+    guitar    = State()

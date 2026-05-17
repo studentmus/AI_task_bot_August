@@ -178,14 +178,15 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
         gcal_date = date_arg or datetime.now(tz=tz).strftime("%Y-%m-%d")
         label = date_arg or "сегодня"
 
-        tasks = actions.get_today_plan(user_id, today=date_arg)
+        tasks = actions.get_today_all(user_id, today=date_arg)
 
         # task lines (include id for LLM reference)
         lines: list[tuple[str, str]] = []  # (sort_key, text)
         for t in tasks:
             tp = t.event_time if (not t.all_day and t.event_time) else "весь день"
             key = t.event_time.split("-")[0].strip() if (not t.all_day and t.event_time) else "99:99"
-            lines.append((key, f"[задача id={t.id}] {tp} | [{t.status}] {t.text}"))
+            status_label = "✅ done" if t.status == "done" else t.status
+            lines.append((key, f"[задача id={t.id}] {tp} | [{status_label}] {t.text}"))
 
         # GCal events (non-bot only)
         try:
@@ -259,5 +260,51 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
     if name == "append_obsidian_log":
         from app.llm.obsidian_tools import append_obsidian_log
         return await append_obsidian_log(args["sphere"], args["entry"])
+
+    if name == "create_recurring_task":
+        from app.storage.recurring_repo import RecurringRepo
+        repo = RecurringRepo(session)
+        rt = repo.create(
+            user_id=user_id,
+            text=args["text"].strip(),
+            recurrence=args["recurrence"].strip(),
+            event_time=args.get("time") or None,
+            end_date=args.get("end_date") or None,
+        )
+        session.commit()
+        recur_label = {
+            "daily": "каждый день",
+            "weekdays": "по рабочим дням (Пн-Пт)",
+        }.get(rt.recurrence)
+        if recur_label is None and rt.recurrence.startswith("weekly:"):
+            days_ru = ["понедельник", "вторник", "среду", "четверг", "пятницу", "субботу", "воскресенье"]
+            try:
+                n = int(rt.recurrence.split(":")[1])
+                recur_label = f"каждый {days_ru[n]}"
+            except (ValueError, IndexError):
+                recur_label = rt.recurrence
+        end_str = f" до {rt.end_date}" if rt.end_date else " (бессрочно)"
+        time_str = f" в {rt.event_time}" if rt.event_time else ""
+        return f"🔁 «{rt.text}» будет создаваться {recur_label}{time_str}{end_str}. id={rt.id}"
+
+    if name == "list_recurring_tasks":
+        from app.storage.recurring_repo import RecurringRepo
+        items = RecurringRepo(session).list_active(user_id)
+        if not items:
+            return "Повторяющихся задач нет."
+        days_ru = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+        lines = ["Активные повторяющиеся задачи:"]
+        for rt in items:
+            recur = {"daily": "ежедневно", "weekdays": "Пн-Пт"}.get(rt.recurrence)
+            if recur is None and rt.recurrence.startswith("weekly:"):
+                try:
+                    n = int(rt.recurrence.split(":")[1])
+                    recur = f"каждый {days_ru[n]}"
+                except (ValueError, IndexError):
+                    recur = rt.recurrence
+            end_str = f" до {rt.end_date}" if rt.end_date else ""
+            time_str = f" {rt.event_time}" if rt.event_time else ""
+            lines.append(f"[id={rt.id}] {rt.text} — {recur}{time_str}{end_str}")
+        return "\n".join(lines)
 
     raise ValueError(f"Неизвестный инструмент: {name!r}")
