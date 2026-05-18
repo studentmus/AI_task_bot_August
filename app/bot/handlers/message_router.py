@@ -12,6 +12,7 @@ from aiogram.types import Message
 
 from app.bot.handlers.checkin_handler import checkin_router
 from app.bot.handlers.commands import commands_router
+from app.bot.handlers.focus_handler import focus_router
 from app.bot.handlers.tasks import _build_card, _build_keyboard, tasks_router
 from app.domain.task_service import TaskService
 from app.llm.deepseek_client import call_deepseek_chat
@@ -49,6 +50,7 @@ main_router = Router(name="main")
 main_router.include_router(commands_router)
 main_router.include_router(tasks_router)
 main_router.include_router(checkin_router)
+main_router.include_router(focus_router)
 
 
 # ---------------------------------------------------------------------------

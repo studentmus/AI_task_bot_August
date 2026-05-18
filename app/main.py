@@ -56,6 +56,8 @@ async def _set_commands(bot: Bot) -> None:
         BotCommand(command="recurring", description="🔁 Повторяющиеся задачи"),
         BotCommand(command="cleanup",   description="🧹 Очистить мусорные задачи"),
         # ── Инструменты ──────────────────────────────────────────────────
+        BotCommand(command="focus",     description="🎯 Начать Pomodoro-фокус на задаче"),
+        BotCommand(command="stopfocus", description="🛑 Завершить фокус-сессию"),
         BotCommand(command="motivate", description="💢 Мотивационный пинок (/motivate зал)"),
         BotCommand(command="audit",    description="🔍 Последние tool calls (отладка)"),
         BotCommand(command="start",    description="🤖 Справка и список команд"),
@@ -141,6 +143,8 @@ async def main() -> None:
 
     await _set_commands(bot)
     scheduler = start_scheduler(bot, dp.storage)
+    from app.jobs.scheduler_ref import set_scheduler
+    set_scheduler(scheduler)
 
     # Enrich recent log entries that were saved before structured_data existed.
     # Runs once in background at startup; sleeps 1s between LLM calls to stay polite.

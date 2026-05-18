@@ -82,6 +82,7 @@ def _build_keyboard(task_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📝 Название", callback_data=f"edittitle_{task_id}"),
         ],
         [
+            InlineKeyboardButton(text="🎯 Фокус",   callback_data=f"focus_task:{task_id}"),
             InlineKeyboardButton(text="✅ Готово",   callback_data=f"done_{task_id}"),
             InlineKeyboardButton(text="🗑 Удалить",  callback_data=f"cancel_{task_id}"),
         ],
