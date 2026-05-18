@@ -117,6 +117,7 @@ def start_scheduler(bot: Bot, storage: BaseStorage) -> AsyncIOScheduler:
     from app.jobs.idle_detector import check_idle
     from app.jobs.morning_checkin import send_sleep_checkin
     from app.jobs.morning_plan import send_morning_plan
+    from app.jobs.morning_protocol import send_morning_protocol
     from app.jobs.next_step_push import send_next_step_push
     from app.jobs.recurring_spawn import spawn_recurring_tasks
 
@@ -149,6 +150,13 @@ def start_scheduler(bot: Bot, storage: BaseStorage) -> AsyncIOScheduler:
         trigger=CronTrigger(hour=8, minute=5, timezone=settings.task_timezone),
         args=[bot],
         id="sleep_checkin",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        send_morning_protocol,
+        trigger=CronTrigger(hour=8, minute=10, timezone=settings.task_timezone),
+        args=[bot],
+        id="morning_protocol",
         replace_existing=True,
     )
     scheduler.add_job(

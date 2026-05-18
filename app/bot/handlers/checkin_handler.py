@@ -90,3 +90,27 @@ async def cb_evening_skip(callback: CallbackQuery) -> None:
     await callback.answer("Окей!")
     if callback.message:
         await callback.message.edit_text("⏩ Пропущено.")
+
+
+# ---------------------------------------------------------------------------
+# Утренний протокол
+# ---------------------------------------------------------------------------
+
+@checkin_router.callback_query(F.data.startswith("proto:"))
+async def cb_proto_item(callback: CallbackQuery) -> None:
+    await callback.answer()
+    parts = callback.data.split(":")
+    if len(parts) < 3:
+        return
+    action = parts[1]   # "done" or "skip"
+    item_id = parts[2]
+
+    from app.jobs.morning_protocol import build_protocol_message, set_item_status
+    set_item_status(item_id, action)
+    text, kb = build_protocol_message()
+
+    if callback.message:
+        try:
+            await callback.message.edit_text(text, reply_markup=kb)
+        except Exception:
+            pass
