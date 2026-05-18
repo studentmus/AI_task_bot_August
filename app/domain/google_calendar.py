@@ -40,11 +40,10 @@ def _get_credentials() -> Credentials:
                 creds = None
 
         if not creds or not creds.valid:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                str(_CREDENTIALS_FILE), SCOPES
+            raise RuntimeError(
+                "Google Calendar token missing or expired. "
+                "Run: python scripts/auth_gcal.py"
             )
-            # run_console работает на VPS без браузера: печатает URL, ждёт код
-            creds = flow.run_console()
 
         _TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
 
