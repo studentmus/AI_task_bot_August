@@ -35,7 +35,8 @@ _HELP_TEXT = (
     "  /cleanup   — очистить мусор\n\n"
     "── Инструменты ──\n"
     "  /motivate [категория] — мотивационный пинок\n"
-    "  Категории: зал, thesis, немецкий, румынский\n\n"
+    "  Категории: зал, thesis, немецкий, румынский\n"
+    "  /audit — последние 10 tool calls (отладка)\n\n"
     "── Примеры ──\n"
     "• /sleep 23:30–7:00, хорошо выспался\n"
     "• /meal каша 300г + 2 яйца\n"
@@ -101,6 +102,33 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await message.answer("Действие отменено.")
+
+
+@commands_router.message(Command("audit"))
+async def cmd_audit(message: Message) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    with SessionLocal() as session:
+        from app.storage.db import ToolAuditLog
+        rows = (
+            session.query(ToolAuditLog)
+            .filter(ToolAuditLog.user_id == user_id)
+            .order_by(ToolAuditLog.id.desc())
+            .limit(10)
+            .all()
+        )
+    if not rows:
+        await message.answer("Аудит пуст — LLM tool calls ещё не было.")
+        return
+
+    lines = ["🔍 Последние tool calls:\n"]
+    for r in reversed(rows):
+        icon = "✅" if r.ok else "❌"
+        ts = r.created_at[11:16]
+        args_short = (r.args_json or "")[:60]
+        lines.append(f"{icon} {ts} {r.tool_name}({args_short})")
+        if not r.ok and r.error_text:
+            lines.append(f"   ↳ {r.error_text[:80]}")
+    await message.answer("\n".join(lines))
 
 
 @commands_router.message(Command("recurring"))

@@ -63,13 +63,13 @@ def _build_card(task: _TaskLike, parser: str | None = None) -> str:
 def _build_keyboard(task_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Готово",   callback_data=f"done_{task_id}"),
-            InlineKeyboardButton(text="🗑 Удалить",  callback_data=f"cancel_{task_id}"),
-        ],
-        [
             InlineKeyboardButton(text="✏️ Дата",     callback_data=f"editdate_{task_id}"),
             InlineKeyboardButton(text="🕐 Время",    callback_data=f"edittime_{task_id}"),
             InlineKeyboardButton(text="📝 Название", callback_data=f"edittitle_{task_id}"),
+        ],
+        [
+            InlineKeyboardButton(text="✅ Готово",   callback_data=f"done_{task_id}"),
+            InlineKeyboardButton(text="🗑 Удалить",  callback_data=f"cancel_{task_id}"),
         ],
     ])
 

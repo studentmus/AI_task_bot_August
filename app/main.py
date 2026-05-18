@@ -57,6 +57,7 @@ async def _set_commands(bot: Bot) -> None:
         BotCommand(command="cleanup",   description="🧹 Очистить мусорные задачи"),
         # ── Инструменты ──────────────────────────────────────────────────
         BotCommand(command="motivate", description="💢 Мотивационный пинок (/motivate зал)"),
+        BotCommand(command="audit",    description="🔍 Последние tool calls (отладка)"),
         BotCommand(command="start",    description="🤖 Справка и список команд"),
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())

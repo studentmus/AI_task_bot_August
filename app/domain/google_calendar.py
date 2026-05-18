@@ -33,12 +33,19 @@ def _get_credentials() -> Credentials:
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception as exc:
+                logger.warning("Token refresh failed (%s), need re-auth", exc)
+                creds = None
+
+        if not creds or not creds.valid:
             flow = InstalledAppFlow.from_client_secrets_file(
                 str(_CREDENTIALS_FILE), SCOPES
             )
-            creds = flow.run_local_server(port=0)
+            # run_console работает на VPS без браузера: печатает URL, ждёт код
+            creds = flow.run_console()
+
         _TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
 
     return creds

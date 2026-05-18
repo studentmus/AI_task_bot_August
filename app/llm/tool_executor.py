@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
@@ -9,6 +10,24 @@ from app.storage.task_repo import TaskRepo
 
 
 logger = logging.getLogger(__name__)
+
+
+def _write_audit(session: Session, user_id: int, name: str, args: dict, ok: bool, result_text: str) -> None:
+    try:
+        from app.storage.db import ToolAuditLog
+        entry = ToolAuditLog(
+            created_at=datetime.now().isoformat(timespec="seconds"),
+            user_id=user_id,
+            tool_name=name,
+            args_json=json.dumps(args, ensure_ascii=False)[:500],
+            ok=ok,
+            result_text=result_text[:200] if ok else None,
+            error_text=result_text[:200] if not ok else None,
+        )
+        session.add(entry)
+        session.commit()
+    except Exception:
+        logger.warning("Failed to write tool audit log for %s", name)
 
 
 async def execute_tool_call(tool_call: dict, session: Session, user_id: int) -> str:
@@ -30,12 +49,18 @@ async def execute_tool_call(tool_call: dict, session: Session, user_id: int) -> 
 
     try:
         result = await _dispatch(name, args, session, user_id)
-        return json.dumps({"ok": True, "result": result}, ensure_ascii=False)
+        out = json.dumps({"ok": True, "result": result}, ensure_ascii=False)
+        _write_audit(session, user_id, name, args, True, result)
+        return out
     except ValueError as exc:
-        return _err(str(exc))
+        err_out = _err(str(exc))
+        _write_audit(session, user_id, name, args, False, str(exc))
+        return err_out
     except Exception:
         logger.exception("Tool execution failed: %s", name)
-        return _err(f"Ошибка при выполнении {name!r}")
+        err_out = _err(f"Ошибка при выполнении {name!r}")
+        _write_audit(session, user_id, name, args, False, f"Exception in {name}")
+        return err_out
 
 
 def _err(message: str) -> str:

@@ -93,6 +93,19 @@ class RecurringTask(Base):
     created_at       = Column(String, nullable=False)
 
 
+class ToolAuditLog(Base):
+    __tablename__ = "tool_audit_log"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    created_at  = Column(String, nullable=False, index=True)
+    user_id     = Column(Integer, nullable=False, index=True)
+    tool_name   = Column(String, nullable=False)
+    args_json   = Column(String)
+    ok          = Column(Boolean, nullable=False)
+    result_text = Column(String)
+    error_text  = Column(String)
+
+
 def _apply_migrations() -> None:
     """Добавляет/переименовывает колонки в существующей БД (idempotent)."""
     insp = inspect(engine)
