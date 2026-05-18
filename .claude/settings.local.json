@@ -9,7 +9,8 @@
       "Bash(git remote *)",
       "Bash(find \"\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\adminlinux\\\\AI_task_man\" -type f -name \"*.py\")",
       "Bash(find \"\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\adminlinux\\\\AI_task_man/app/bot\" -type f -name \"*.py\")",
-      "Bash(grep *)"
+      "Bash(grep *)",
+      "Bash(git add *)"
     ]
   }
 }
