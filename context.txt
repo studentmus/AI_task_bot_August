@@ -17,6 +17,13 @@ August AI Assist — Полный технический контекст про
        conda activate taskbot (Python окружение)
   Prod: Ubuntu 24.04 VPS /opt/AI_task_bot_August, systemd unit taskbot.service
 
+  Obsidian Vault (единственный источник правды):
+    Windows путь: C:\Users\Admin\MyBrain
+    WSL путь:     /mnt/c/Users/Admin/MyBrain   ← используется ботом локально
+    VPS:          /opt/MyBrain (или аналог)     ← продакшн-бот
+    Все три точки синхронизируются через один git remote.
+    .gitignore содержит *:Zone.Identifier — Windows-артефакты не попадают в репо.
+
   ---
   Стек
 
