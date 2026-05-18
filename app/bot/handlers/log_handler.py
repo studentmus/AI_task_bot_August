@@ -219,6 +219,10 @@ def _cmds_inline_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🧹 Очистить",  callback_data="cmd_exec:cleanup"),
         ],
         [
+            InlineKeyboardButton(text="🎯 Фокус",     callback_data="cmd_exec:focus"),
+            InlineKeyboardButton(text="🔍 Аудит",     callback_data="cmd_exec:audit"),
+        ],
+        [
             InlineKeyboardButton(text="↩ Отменить",   callback_data="cmd_exec:undo"),
             InlineKeyboardButton(text="💢 Мотивация", callback_data="cmd_exec:motivate"),
         ],
@@ -383,18 +387,20 @@ async def cb_cmd_exec(callback: CallbackQuery, state: FSMContext) -> None:
         await _run_day_view(callback.message, user_id, "сегодня" if cmd == "today" else "завтра")
 
     elif cmd == "pending":
+        from app.bot.handlers.commands import _task_priority_icon, _task_priority_score
         from app.storage.db import SessionLocal
         from app.storage.task_repo import TaskRepo
         with SessionLocal() as session:
-            tasks = TaskRepo(session).list_recent(limit=10)
+            tasks = TaskRepo(session).list_recent(limit=15)
         if not tasks:
             await callback.message.answer("Задач пока нет.")
         else:
-            lines = ["📋 Последние задачи:\n"]
+            tasks.sort(key=lambda t: (-_task_priority_score(t), -t.id))
+            lines = ["📋 Задачи (по приоритету):\n"]
             for i, task in enumerate(tasks, start=1):
-                mark = "✓" if task.status == "confirmed" else " "
-                date_str = task.suggested_date or "без даты"
-                lines.append(f"{i}. {date_str} | {task.status.ljust(9)} | {mark} {task.text}")
+                icon = _task_priority_icon(task)
+                date_str = task.suggested_date or "бэклог"
+                lines.append(f"{icon} {i}. {date_str} — {task.text} [{task.status}]")
             await callback.message.answer("\n".join(lines))
 
     elif cmd == "cleanup":
@@ -449,6 +455,61 @@ async def cb_cmd_exec(callback: CallbackQuery, state: FSMContext) -> None:
                 end_str = f" до {rt.end_date}" if rt.end_date else ""
                 time_str = f" {rt.event_time}" if rt.event_time else ""
                 lines.append(f"{rt.id}. {rt.text} — {recur}{time_str}{end_str}")
+            await callback.message.answer("\n".join(lines))
+
+    elif cmd == "focus":
+        from app.bot.handlers.focus_handler import _is_active, _focus
+        from app.storage.db import SessionLocal
+        from app.storage.task_repo import TaskRepo
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup as IKM
+        if _is_active():
+            task_text = _focus.get("task_text", "")
+            cycle = _focus.get("cycle", 0)
+            await callback.message.answer(
+                f"🎯 Уже в фокусе: «{task_text}» (цикл {cycle + 1})\n/stopfocus — завершить"
+            )
+        else:
+            with SessionLocal() as session:
+                tasks = TaskRepo(session).get_today_plan(user_id)
+            if not tasks:
+                await callback.message.answer(
+                    "📝 На сегодня задач нет.\nНапиши: <code>/focus название</code>"
+                )
+            else:
+                rows = [
+                    [InlineKeyboardButton(
+                        text=t.text[:45],
+                        callback_data=f"focus_select:{t.id}",
+                    )]
+                    for t in tasks[:5]
+                ]
+                rows.append([InlineKeyboardButton(text="✏️ Другое", callback_data="focus_select:custom")])
+                await callback.message.answer(
+                    "🎯 Над чем работаешь?",
+                    reply_markup=IKM(inline_keyboard=rows),
+                )
+
+    elif cmd == "audit":
+        from app.storage.db import SessionLocal, ToolAuditLog
+        with SessionLocal() as session:
+            rows = (
+                session.query(ToolAuditLog)
+                .filter(ToolAuditLog.user_id == user_id)
+                .order_by(ToolAuditLog.id.desc())
+                .limit(10)
+                .all()
+            )
+        if not rows:
+            await callback.message.answer("Аудит пуст.")
+        else:
+            lines = ["🔍 Последние tool calls:\n"]
+            for r in reversed(rows):
+                icon = "✅" if r.ok else "❌"
+                ts = r.created_at[11:16]
+                args_short = (r.args_json or "")[:60]
+                lines.append(f"{icon} {ts} {r.tool_name}({args_short})")
+                if not r.ok and r.error_text:
+                    lines.append(f"   ↳ {r.error_text[:80]}")
             await callback.message.answer("\n".join(lines))
 
     elif cmd == "stop":
