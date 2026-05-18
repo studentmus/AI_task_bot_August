@@ -51,21 +51,41 @@ async def cmd_start(message: Message) -> None:
     await message.answer(_HELP_TEXT, reply_markup=LOG_KEYBOARD)
 
 
+def _task_priority_score(task) -> int:
+    u = getattr(task, "urgency", None)
+    imp = getattr(task, "importance", None)
+    return (u or 0) * (imp or 0)
+
+
+def _task_priority_icon(task) -> str:
+    score = _task_priority_score(task)
+    if score >= 15:
+        return "🔴"
+    if score >= 8:
+        return "🟡"
+    if score > 0:
+        return "🟢"
+    return "  "
+
+
 @commands_router.message(Command("pending"))
 async def cmd_pending(message: Message) -> None:
     with SessionLocal() as session:
         repo = TaskRepo(session)
-        tasks = repo.list_recent(limit=10)
+        tasks = repo.list_recent(limit=15)
 
     if not tasks:
         await message.answer("Задач пока нет.")
         return
 
-    lines = ["📋 Последние задачи:\n"]
+    # Sort: tasks with priority first (desc score), then by id desc
+    tasks.sort(key=lambda t: (-_task_priority_score(t), -t.id))
+
+    lines = ["📋 Задачи (по приоритету):\n"]
     for i, task in enumerate(tasks, start=1):
-        mark = "✓" if task.status == "confirmed" else " "
-        status = task.status.ljust(9)
-        lines.append(f"{i}. {task.suggested_date} | {status} | {mark} {task.text}")
+        icon = _task_priority_icon(task)
+        date_str = task.suggested_date or "бэклог"
+        lines.append(f"{icon} {i}. {date_str} — {task.text} [{task.status}]")
 
     await message.answer("\n".join(lines))
 

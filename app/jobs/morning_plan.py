@@ -35,7 +35,11 @@ def _build_plan_text(today_str: str, tasks, cal_events) -> str:
     for task in tasks:
         key = _task_sort_key(task)
         time_part = task.event_time if (not task.all_day and task.event_time) else "весь день"
-        items.append((key, f"✅ {time_part} — {task.text}"))
+        u = getattr(task, "urgency", None)
+        imp = getattr(task, "importance", None)
+        score = (u or 0) * (imp or 0)
+        p_icon = ("🔴 " if score >= 15 else ("🟡 " if score >= 8 else ("🟢 " if score > 0 else "")))
+        items.append((key, f"✅ {time_part} — {p_icon}{task.text}"))
 
     for ev in cal_events:
         if ev.is_bot_task:

@@ -51,13 +51,27 @@ def _format_date(date_str: str) -> str:
         return date_str
 
 
+def _priority_icon(task) -> str:
+    u = getattr(task, "urgency", None)
+    imp = getattr(task, "importance", None)
+    if u is None or imp is None:
+        return ""
+    score = u * imp
+    return "🔴" if score >= 15 else ("🟡" if score >= 8 else "🟢")
+
+
 def _build_card(task: _TaskLike, parser: str | None = None) -> str:
     time_line = "весь день" if task.all_day or not task.event_time else task.event_time
-    return "\n".join([
+    priority = _priority_icon(task)
+    priority_line = f"🎯 Приоритет: {priority} (срочность {task.urgency}/5 · важность {task.importance}/5)" if priority else ""
+    lines = [
         f"📝 <b>{task.text}</b>",
         f"📅 {_format_date(task.suggested_date)}",
         f"🕐 {time_line}",
-    ])
+    ]
+    if priority_line:
+        lines.append(priority_line)
+    return "\n".join(lines)
 
 
 def _build_keyboard(task_id: int) -> InlineKeyboardMarkup:

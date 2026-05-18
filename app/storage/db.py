@@ -43,6 +43,8 @@ class Task(Base):
     confirmed_at = Column(String)
     last_ping_at = Column(String)
     ping_count = Column(Integer, default=0)
+    urgency     = Column(Integer, nullable=True)   # 1-5: how time-sensitive
+    importance  = Column(Integer, nullable=True)   # 1-5: how impactful
 
 
 class MemoryItem(Base):
@@ -120,6 +122,10 @@ def _apply_migrations() -> None:
         pending.append("ALTER TABLE tasks ADD COLUMN ping_count INTEGER DEFAULT 0")
     if "radicale_uid" in existing and "google_event_id" not in existing:
         pending.append("ALTER TABLE tasks RENAME COLUMN radicale_uid TO google_event_id")
+    if "urgency" not in existing:
+        pending.append("ALTER TABLE tasks ADD COLUMN urgency INTEGER")
+    if "importance" not in existing:
+        pending.append("ALTER TABLE tasks ADD COLUMN importance INTEGER")
 
     if "log_entries" in insp.get_table_names():
         existing_log = {col["name"] for col in insp.get_columns("log_entries")}

@@ -68,8 +68,46 @@ TOOLS: list[dict] = [
                         "type": ["string", "null"],
                         "description": "Время в формате HH:MM или null если время не указано.",
                     },
+                    "urgency": {
+                        "type": ["integer", "null"],
+                        "description": (
+                            "Срочность 1–5: насколько скоро нужно сделать. "
+                            "5 = сегодня/завтра критично; 1 = когда-нибудь. "
+                            "null если непонятно."
+                        ),
+                    },
+                    "importance": {
+                        "type": ["integer", "null"],
+                        "description": (
+                            "Важность 1–5: насколько влияет на цели. "
+                            "5 = критически важно; 1 = мелочь. "
+                            "null если непонятно."
+                        ),
+                    },
                 },
                 "required": ["text"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_priority",
+            "description": (
+                "Установить приоритет существующей задачи. "
+                "Используй когда пользователь говорит 'высокий приоритет', "
+                "'это важно', 'срочно', 'не срочно' для конкретной задачи."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": ["integer", "null"]},
+                    "task_text": {"type": ["string", "null"], "description": "Текст или ключевые слова задачи если task_id неизвестен."},
+                    "urgency":    {"type": "integer", "description": "Срочность 1–5."},
+                    "importance": {"type": "integer", "description": "Важность 1–5."},
+                },
+                "required": ["urgency", "importance"],
                 "additionalProperties": False,
             },
         },

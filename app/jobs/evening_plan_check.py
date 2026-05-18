@@ -1,5 +1,9 @@
 import logging
 from datetime import date, timedelta
+from pathlib import Path
+from typing import Optional
+
+import yaml
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,21 +15,36 @@ from app.storage.task_repo import TaskRepo
 logger = logging.getLogger(__name__)
 
 
+def _load_daily_goals() -> list[dict]:
+    """Read daily_goals from protocols.yaml. Falls back to empty list."""
+    path = Path(settings.obsidian_vault_path) / "_bot" / "protocols.yaml"
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return data.get("daily_goals", [])
+    except Exception as exc:
+        logger.warning("Could not load daily_goals from protocols.yaml: %s", exc)
+        return []
+
+
 async def send_language_nudge(bot: Bot) -> None:
-    """19:00 — nudge if German / Romanian not logged today."""
+    """19:00 — nudge for any daily_goals not yet logged today."""
     user_id = settings.allowed_user_id
     if not user_id:
+        return
+
+    goals = _load_daily_goals()
+    if not goals:
         return
 
     with SessionLocal() as session:
         from app.domain.next_step import _get_today_activity
         activity = _get_today_activity(session, user_id)
 
-    missing = []
-    if not activity.get("german"):
-        missing.append("🇩🇪 Немецкий 15 мин → /german")
-    if not activity.get("romanian"):
-        missing.append("🇷🇴 Румынский 15 мин → /romanian")
+    missing = [
+        g["label"] for g in goals
+        if not activity.get(g["sphere"])
+    ]
 
     if not missing:
         return
@@ -54,11 +73,11 @@ async def send_evening_empty_day(bot: Bot) -> None:
     if tomorrow_tasks:
         return  # tomorrow already has tasks — no need to alert
 
-    missing_goals = []
-    if not activity.get("german"):
-        missing_goals.append("🇩🇪 Немецкий")
-    if not activity.get("romanian"):
-        missing_goals.append("🇷🇴 Румынский")
+    goals = _load_daily_goals()
+    missing_goals = [
+        g["label"] for g in goals
+        if not activity.get(g["sphere"])
+    ]
 
     lines = ["📅 Завтра ещё ничего не запланировано!"]
     if missing_goals:

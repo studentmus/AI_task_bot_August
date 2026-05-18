@@ -33,11 +33,12 @@ class TaskRepo:
         event_time: Optional[str],
         all_day: bool,
         user_id: int,
+        urgency: Optional[int] = None,
+        importance: Optional[int] = None,
     ) -> int:
         task = Task(
             text=text,
             category="inbox",
-            importance="medium",
             suggested_date=_normalize_date(date) if date else None,
             event_time=event_time,
             all_day=all_day,
@@ -45,6 +46,8 @@ class TaskRepo:
             created_at=datetime.now().isoformat(timespec="seconds"),
             telegram_user_id=user_id,
             ping_count=0,
+            urgency=urgency,
+            importance=importance,
         )
         self._s.add(task)
         self._s.flush()
@@ -56,6 +59,14 @@ class TaskRepo:
 
     def get(self, task_id: int) -> Optional[Task]:
         return self._s.get(Task, task_id)
+
+    def set_priority(self, task_id: int, urgency: int, importance: int) -> bool:
+        task = self._s.get(Task, task_id)
+        if task is None:
+            return False
+        task.urgency = urgency
+        task.importance = importance
+        return True
 
     def list_recent(self, limit: int = 10) -> list[Task]:
         return (

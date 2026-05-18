@@ -99,9 +99,21 @@ def _resolve_task_ids(args: dict, session: Session, user_id: int) -> list[int]:
 async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> str:
     actions = TaskActions(session)
 
+    if name == "set_priority":
+        task_id = _resolve_task_id(args, session, user_id)
+        u = max(1, min(5, int(args["urgency"])))
+        imp = max(1, min(5, int(args["importance"])))
+        TaskRepo(session).set_priority(task_id, u, imp)
+        session.commit()
+        score = u * imp
+        icon = "🔴" if score >= 15 else ("🟡" if score >= 8 else "🟢")
+        return f"{icon} Приоритет установлен: срочность {u}/5, важность {imp}/5."
+
     if name == "create_task":
         time_val = args.get("time") or None
         date_val = args.get("date") or None
+        urgency_val = args.get("urgency")
+        importance_val = args.get("importance")
         repo = TaskRepo(session)
         task_id = repo.insert_pending(
             text=args["text"],
@@ -109,6 +121,8 @@ async def _dispatch(name: str, args: dict, session: Session, user_id: int) -> st
             event_time=time_val,
             all_day=time_val is None,
             user_id=user_id,
+            urgency=int(urgency_val) if urgency_val else None,
+            importance=int(importance_val) if importance_val else None,
         )
         repo.confirm(task_id)
         session.commit()
