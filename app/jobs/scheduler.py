@@ -112,7 +112,10 @@ def start_scheduler(bot: Bot, storage: BaseStorage) -> AsyncIOScheduler:
     from app.jobs.alert_checker import check_proactive_alerts
     from app.jobs.backlog_nudge import send_backlog_nudge
     from app.jobs.due_pings import check_due_items
+    from app.jobs.evening_plan_check import send_evening_empty_day, send_language_nudge
     from app.jobs.evening_review import send_evening_review
+    from app.jobs.idle_detector import check_idle
+    from app.jobs.morning_checkin import send_sleep_checkin
     from app.jobs.morning_plan import send_morning_plan
     from app.jobs.next_step_push import send_next_step_push
     from app.jobs.recurring_spawn import spawn_recurring_tasks
@@ -128,6 +131,13 @@ def start_scheduler(bot: Bot, storage: BaseStorage) -> AsyncIOScheduler:
         replace_existing=True,
     )
     scheduler.add_job(
+        check_idle,
+        trigger=IntervalTrigger(minutes=10),
+        args=[bot],
+        id="check_idle",
+        replace_existing=True,
+    )
+    scheduler.add_job(
         send_morning_plan,
         trigger=CronTrigger(hour=8, minute=0, timezone=settings.task_timezone),
         args=[bot],
@@ -135,10 +145,31 @@ def start_scheduler(bot: Bot, storage: BaseStorage) -> AsyncIOScheduler:
         replace_existing=True,
     )
     scheduler.add_job(
+        send_sleep_checkin,
+        trigger=CronTrigger(hour=8, minute=5, timezone=settings.task_timezone),
+        args=[bot],
+        id="sleep_checkin",
+        replace_existing=True,
+    )
+    scheduler.add_job(
         send_next_step_push,
         trigger=CronTrigger(hour=12, minute=30, timezone=settings.task_timezone),
         args=[bot],
         id="next_step_push",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        send_backlog_nudge,
+        trigger=CronTrigger(hour=14, minute=0, timezone=settings.task_timezone),
+        args=[bot],
+        id="backlog_nudge",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        send_language_nudge,
+        trigger=CronTrigger(hour=19, minute=0, timezone=settings.task_timezone),
+        args=[bot],
+        id="language_nudge",
         replace_existing=True,
     )
     scheduler.add_job(
@@ -155,12 +186,11 @@ def start_scheduler(bot: Bot, storage: BaseStorage) -> AsyncIOScheduler:
         id="evening_review",
         replace_existing=True,
     )
-
     scheduler.add_job(
-        send_backlog_nudge,
-        trigger=CronTrigger(hour=14, minute=0, timezone=settings.task_timezone),
+        send_evening_empty_day,
+        trigger=CronTrigger(hour=21, minute=30, timezone=settings.task_timezone),
         args=[bot],
-        id="backlog_nudge",
+        id="evening_empty_day",
         replace_existing=True,
     )
     scheduler.add_job(

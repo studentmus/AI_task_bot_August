@@ -47,6 +47,11 @@ class TaskActions:
         except Exception:
             logger.exception("Google Calendar mark_done failed for task id=%s", task_id)
         logger.info("Task completed id=%s", task_id)
+        try:
+            from app.jobs.idle_detector import mark_task_done
+            mark_task_done()
+        except Exception:
+            pass
         return f"✅ «{name}» — выполнено."
 
     def delete_task(self, task_id: int) -> str:

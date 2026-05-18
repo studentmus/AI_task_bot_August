@@ -10,6 +10,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.types import Message
 
+from app.bot.handlers.checkin_handler import checkin_router
 from app.bot.handlers.commands import commands_router
 from app.bot.handlers.tasks import _build_card, _build_keyboard, tasks_router
 from app.domain.task_service import TaskService
@@ -47,6 +48,7 @@ main_router = Router(name="main")
 # Порядок важен: commands → callbacks/FSM → text dispatch (этот модуль)
 main_router.include_router(commands_router)
 main_router.include_router(tasks_router)
+main_router.include_router(checkin_router)
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +439,12 @@ async def dispatch_text(message: Message) -> None:
     raw = message.text.strip()
     user_id = message.from_user.id if message.from_user else 0
     lower = raw.lower()
+
+    try:
+        from app.jobs.idle_detector import mark_interaction
+        mark_interaction()
+    except Exception:
+        pass
 
     # ── 0. ОТКАЗ ОТ ТРЕНИРОВКИ при нормальной энергии → мотивационный пинок ──
     if _TRAINING_REFUSAL_RE.search(lower):
