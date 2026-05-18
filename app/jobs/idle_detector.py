@@ -36,6 +36,7 @@ def snooze_idle(minutes: int) -> None:
 
 
 async def check_idle(bot: Bot) -> None:
+    global _idle_ping_sent_at
     user_id = settings.allowed_user_id
     if not user_id or _last_task_done_at is None:
         return
@@ -81,7 +82,6 @@ async def check_idle(bot: Bot) -> None:
     ]])
     try:
         await bot.send_message(user_id, "⏱ 45 минут без задачи. Что дальше?", reply_markup=kb)
-        global _idle_ping_sent_at
         _idle_ping_sent_at = now
         logger.info("Idle ping sent user=%s since_done=%.0fm", user_id, since_done)
     except Exception:
