@@ -12,8 +12,12 @@ Flow:
   4. Copy the FULL URL from the browser address bar and paste it here
   5. token.json is saved; restart the bot
 """
+import os
 import sys
 from pathlib import Path
+
+# Разрешаем HTTP redirect для localhost (обязательно для скриптов авторизации)
+os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 # Run from project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -28,8 +32,8 @@ if not CREDENTIALS.exists():
     print(f"ERROR: {CREDENTIALS} not found. Copy credentials.json to data/ first.")
     sys.exit(1)
 
-# Port 1 is guaranteed to be refused — browser shows the full redirect URL with code
-REDIRECT_URI = "http://localhost:1"
+# Порт 8080 — не блокируется браузером (в отличие от порта 1)
+REDIRECT_URI = "http://localhost:8080"
 
 flow = Flow.from_client_secrets_file(
     str(CREDENTIALS),
@@ -43,9 +47,9 @@ print("Открой этот URL в браузере (на любом устро
 print("=" * 60)
 print(auth_url)
 print("=" * 60)
-print("\nПосле авторизации браузер покажет ошибку 'Connection refused'.")
+print("\nПосле авторизации браузер покажет ошибку подключения — это нормально.")
 print("Скопируй ВЕСЬ URL из адресной строки браузера")
-print("(начинается с http://localhost:1/?state=...&code=...)")
+print("(начинается с http://localhost:8080/?state=...&code=...)")
 print()
 
 redirect_response = input("Вставь URL сюда: ").strip()
@@ -54,7 +58,7 @@ try:
     flow.fetch_token(authorization_response=redirect_response)
 except Exception as exc:
     print(f"\nERROR: {exc}")
-    print("Убедись что скопировал ВЕСЬ URL из адресной строки, включая http://localhost:1/...")
+    print("Убедись что скопировал ВЕСЬ URL из адресной строки, включая http://localhost:8080/...")
     sys.exit(1)
 
 TOKEN.write_text(flow.credentials.to_json(), encoding="utf-8")
