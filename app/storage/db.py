@@ -31,7 +31,6 @@ class Task(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     text = Column(String, nullable=False)
     category = Column(String, default="inbox")
-    importance = Column(String, default="medium")
     priority = Column(String)
     suggested_date = Column(String)
     event_time = Column(String)
@@ -126,6 +125,8 @@ def _apply_migrations() -> None:
         pending.append("ALTER TABLE tasks ADD COLUMN urgency INTEGER")
     if "importance" not in existing:
         pending.append("ALTER TABLE tasks ADD COLUMN importance INTEGER")
+    # Clear legacy string importance values ("medium", "high", etc.) that break numeric priority
+    pending.append("UPDATE tasks SET importance = NULL WHERE importance IN ('low','medium','high','critical')")
 
     if "log_entries" in insp.get_table_names():
         existing_log = {col["name"] for col in insp.get_columns("log_entries")}

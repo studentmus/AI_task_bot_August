@@ -52,9 +52,10 @@ async def cmd_start(message: Message) -> None:
 
 
 def _task_priority_score(task) -> int:
-    u = getattr(task, "urgency", None)
-    imp = getattr(task, "importance", None)
-    return (u or 0) * (imp or 0)
+    try:
+        return int(getattr(task, "urgency", None) or 0) * int(getattr(task, "importance", None) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _task_priority_icon(task) -> str:
