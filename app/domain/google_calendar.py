@@ -51,7 +51,7 @@ def _get_credentials() -> Credentials:
 
 
 def _get_service():
-    return build("calendar", "v3", credentials=_get_credentials())
+    return build("calendar", "v3", credentials=_get_credentials(), cache_discovery=False)
 
 
 # ---------------------------------------------------------------------------

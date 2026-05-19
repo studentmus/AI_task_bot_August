@@ -10,7 +10,8 @@
       "Bash(find \"\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\adminlinux\\\\AI_task_man\" -type f -name \"*.py\")",
       "Bash(find \"\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\adminlinux\\\\AI_task_man/app/bot\" -type f -name \"*.py\")",
       "Bash(grep *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\Admin\\\\MyBrain\" -Recurse -Depth 2 | ForEach-Object { $_.FullName })"
     ]
   }
 }

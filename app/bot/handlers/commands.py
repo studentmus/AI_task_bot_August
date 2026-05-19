@@ -152,6 +152,16 @@ async def cmd_audit(message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
+@commands_router.message(Command("memory"))
+async def cmd_memory(message: Message) -> None:
+    from app.llm.obsidian_tools import read_memory_from_obsidian
+    content = await read_memory_from_obsidian()
+    if not content or content == "Файл памяти пуст.":
+        await message.answer("🧠 Память пуста.")
+    else:
+        await message.answer(f"🧠 Память:\n\n{content}")
+
+
 @commands_router.message(Command("recurring"))
 async def cmd_recurring(message: Message) -> None:
     user_id = message.from_user.id if message.from_user else 0

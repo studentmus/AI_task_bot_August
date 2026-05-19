@@ -52,6 +52,7 @@ LOG_KEYBOARD = ReplyKeyboardMarkup(
         ],
         [
             KeyboardButton(text="⚙️ Команды"),
+            KeyboardButton(text="📋 Бэклог"),
         ],
     ],
     resize_keyboard=True,
@@ -62,6 +63,7 @@ _LANG_BUTTON = "🌍 Языки"
 _WRITE_BUTTON = "📝 Записать →"
 _NEXT_BTN = "🎯 Что делать?"
 _CMDS_BUTTON = "⚙️ Команды"
+_BACKLOG_BUTTON = "📋 Бэклог"
 
 # Маппинг callback-key → btn_text в _SPHERES
 _KEY_TO_BTN: dict[str, str] = {
@@ -334,6 +336,23 @@ async def _enter_state_from_callback(callback: CallbackQuery, state: FSMContext,
 @log_router.message(F.text == _WRITE_BUTTON)
 async def handle_write_button(message: Message) -> None:
     await message.answer("Выбери сферу:", reply_markup=_sphere_inline_kb())
+
+
+# 1a2. "📋 Бэклог" — задачи без даты
+@log_router.message(F.text == _BACKLOG_BUTTON)
+async def handle_backlog_button(message: Message) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    from app.storage.db import SessionLocal
+    from app.storage.task_repo import TaskRepo
+    with SessionLocal() as session:
+        tasks = TaskRepo(session).get_backlog_tasks(user_id, limit=15)
+    if not tasks:
+        await message.answer("📋 Бэклог пуст.")
+    else:
+        lines = [f"📋 Бэклог ({len(tasks)}):\n"]
+        for i, t in enumerate(tasks, 1):
+            lines.append(f"{i}. {t.text}")
+        await message.answer("\n".join(lines))
 
 
 # 1b. "🎯 Что делать?" — выходит из любого LogState и вызывает next_step

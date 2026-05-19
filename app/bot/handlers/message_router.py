@@ -689,17 +689,38 @@ async def _run_day_view(message: Message, user_id: int, when: str) -> None:
 
     with SessionLocal() as session:
         repo = TaskRepo(session)
-        tasks = repo.get_today_plan(user_id, today=target_str)      # pending+confirmed
-        done_tasks = repo.get_today_done(user_id, today=target_str)  # done only
+        tasks = repo.get_today_plan(user_id, today=target_str)
+        done_tasks = repo.get_today_done(user_id, today=target_str)
 
-    if not tasks and not done_tasks:
+    # Внешние GCal события (не созданные ботом — они уже в SQLite)
+    from app.domain.google_calendar import get_upcoming_events
+    try:
+        gcal_events = await asyncio.to_thread(get_upcoming_events, target_str)
+        external_events = [e for e in gcal_events if not e.is_bot_task]
+    except Exception:
+        external_events = []
+
+    if not tasks and not done_tasks and not external_events:
         await message.answer(f"{header}\nЗадач нет.")
         return
 
-    lines = [header]
+    # Объединяем задачи и внешние события, сортируем по времени
+    items: list[tuple[str, str]] = []  # (sort_key, display_line)
     for t in tasks:
-        time_str = f"{t.event_time} — " if (t.event_time and not t.all_day) else ""
-        lines.append(f"• {time_str}{t.text}")
+        if t.event_time and not t.all_day:
+            items.append((t.event_time, f"• {t.event_time} — {t.text}"))
+        else:
+            items.append(("~", f"• {t.text}"))
+    for e in external_events:
+        if not e.all_day and e.start_time != "весь день":
+            end = f"–{e.end_time}" if e.end_time else ""
+            items.append((e.start_time, f"📅 {e.start_time}{end} — {e.summary}"))
+        else:
+            items.append(("~", f"📅 {e.summary}"))
+
+    items.sort(key=lambda x: x[0])
+
+    lines = [header] + [line for _, line in items]
     if done_tasks:
         names = ", ".join(t.text for t in done_tasks)
         lines.append(f"\n✅ Выполнено: {names}")

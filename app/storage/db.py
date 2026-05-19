@@ -14,7 +14,7 @@ def _engine():
     db_file = Path(settings.db_path)
     db_file.parent.mkdir(parents=True, exist_ok=True)
     url = f"sqlite:///{db_file.resolve()}"
-    return create_engine(url, connect_args={"check_same_thread": False})
+    return create_engine(url, connect_args={"check_same_thread": False, "timeout": 15})
 
 
 engine = _engine()
@@ -149,3 +149,6 @@ def _apply_migrations() -> None:
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _apply_migrations()
+    with engine.connect() as conn:
+        conn.execute(text("PRAGMA journal_mode=WAL"))
+        conn.commit()
