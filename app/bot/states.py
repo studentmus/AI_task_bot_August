@@ -15,3 +15,7 @@ class LogState(StatesGroup):
     context   = State()
     wishlist  = State()
     guitar    = State()
+
+
+class BacklogAddState(StatesGroup):
+    waiting_text = State()

@@ -502,6 +502,12 @@ async def dispatch_text(message: Message) -> None:
         await _run_llm_chat(message, user_id, raw)
         return
 
+    # ── 0.9. БЭКЛОГ — явный запрос добавить/посмотреть бэклог → LLM (create_task без даты) ──
+    if "бэклог" in lower:
+        logger.info("Backlog keyword → LLM for %r", raw)
+        await _run_llm_chat(message, user_id, raw)
+        return
+
     # ── 1. ПРЯМОЙ ЛОГ: сфера + текст извлекаются regex, LLM не нужен ──────────
     # "Запиши в питание: съел стейк" / "Съел стейк, запиши в питание"
     direct = _parse_direct_log_intent(raw)

@@ -34,7 +34,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from app.bot.states import LogState
+from app.bot.states import BacklogAddState, LogState
 from app.config import settings
 from app.llm.obsidian_tools import append_to_bot_log, delete_last_log_entry
 
@@ -338,7 +338,7 @@ async def handle_write_button(message: Message) -> None:
     await message.answer("Выбери сферу:", reply_markup=_sphere_inline_kb())
 
 
-# 1a2. "📋 Бэклог" — задачи без даты
+# 1a2. "📋 Бэклог" — задачи без даты + кнопка добавить
 @log_router.message(F.text == _BACKLOG_BUTTON)
 async def handle_backlog_button(message: Message) -> None:
     user_id = message.from_user.id if message.from_user else 0
@@ -346,13 +346,42 @@ async def handle_backlog_button(message: Message) -> None:
     from app.storage.task_repo import TaskRepo
     with SessionLocal() as session:
         tasks = TaskRepo(session).get_backlog_tasks(user_id, limit=15)
+    add_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="➕ Добавить", callback_data="backlog_add"),
+    ]])
     if not tasks:
-        await message.answer("📋 Бэклог пуст.")
+        await message.answer("📋 Бэклог пуст.", reply_markup=add_kb)
     else:
         lines = [f"📋 Бэклог ({len(tasks)}):\n"]
         for i, t in enumerate(tasks, 1):
             lines.append(f"{i}. {t.text}")
-        await message.answer("\n".join(lines))
+        await message.answer("\n".join(lines), reply_markup=add_kb)
+
+
+@log_router.callback_query(F.data == "backlog_add")
+async def cb_backlog_add(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(BacklogAddState.waiting_text)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.message.answer("Напиши задачу для бэклога:")
+    await callback.answer()
+
+
+@log_router.message(StateFilter(BacklogAddState.waiting_text), F.text, ~F.text.startswith("/"))
+async def handle_backlog_add_text(message: Message, state: FSMContext) -> None:
+    text = message.text.strip()
+    user_id = message.from_user.id if message.from_user else 0
+    await state.clear()
+    from app.storage.db import SessionLocal
+    from app.storage.task_repo import TaskRepo
+    with SessionLocal() as session:
+        TaskRepo(session).insert_pending(
+            text=text, date=None, event_time=None, all_day=True, user_id=user_id
+        )
+        session.commit()
+    await message.answer(f"📋 Добавлено в бэклог: {text}")
 
 
 # 1b. "🎯 Что делать?" — выходит из любого LogState и вызывает next_step
